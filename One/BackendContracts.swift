@@ -404,7 +404,8 @@ private struct BackendMedicationReminder: Decodable {
     }
 }
 
-private extension JSONEncoder {
+// Shared by the API adapter and AppStore when serializing RoomPlan payloads.
+extension JSONEncoder {
     static var one: JSONEncoder { let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase; return encoder }
 }
 
