@@ -410,11 +410,12 @@ private extension JSONEncoder {
 
 private extension JSONDecoder {
     static var one: JSONDecoder { let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase; decoder.dateDecodingStrategy = .custom { decoder in
-        let value = try decoder.singleValueContainer().decode(String.self)
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = formatter.date(from: value) { return date }
         formatter.formatOptions = [.withInternetDateTime]
-        guard let date = formatter.date(from: value) else { throw DecodingError.dataCorruptedError(in: decoder.singleValueContainer(), debugDescription: "Invalid ISO-8601 date") }
+        guard let date = formatter.date(from: value) else { throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid ISO-8601 date") }
         return date
     }; return decoder }
 }
