@@ -13,6 +13,8 @@ struct RootView: View {
 struct LoginView: View {
     @Bindable var store: AppStore
     @State private var pairingCode = ""
+    @State private var emailCode = ""
+    @State private var emailChallenge = false
     @State private var isSubmitting = false
     @State private var mode = 0
     @State private var name = ""
@@ -24,21 +26,28 @@ struct LoginView: View {
             Spacer()
             Text("ONE").font(.caption.weight(.bold)).tracking(2).foregroundStyle(OneTheme.accentBlue)
             Text("Sign in to your home.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.2).foregroundStyle(OneTheme.ink)
-            Text("Enter the one-time pairing code from your ONE backend. Your session is stored securely on this device.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
+            Text("Use your email to keep your household with you when you change phones. Camera pairing remains device-scoped.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
             Picker("Account action", selection: $mode) { Text("Sign in").tag(0); Text("Create household").tag(1); Text("Join household").tag(2) }.pickerStyle(.segmented)
             if mode == 1 {
                 TextField("Your name", text: $name).textFieldStyle(.roundedBorder)
-                TextField("Email (optional)", text: $email).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never)
+                TextField("Email", text: $email).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).keyboardType(.emailAddress)
                 TextField("Household name", text: $homeName).textFieldStyle(.roundedBorder)
                 Toggle("I consent to ONE storing household account data needed for this service.", isOn: $consent).tint(OneTheme.accentBlue).font(.footnote)
+                if emailChallenge { TextField("Email code", text: $emailCode).textFieldStyle(.roundedBorder).keyboardType(.numberPad).accessibilityLabel("Email verification code") }
             } else {
-                TextField(mode == 0 ? "Pairing code" : "Invitation code", text: $pairingCode).textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.roundedBorder).accessibilityLabel(mode == 0 ? "Pairing code" : "Invitation code")
-                if mode == 2 { TextField("Your name (optional)", text: $name).textFieldStyle(.roundedBorder) }
+                if mode == 0 {
+                    TextField("Email", text: $email).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).keyboardType(.emailAddress)
+                    if emailChallenge { TextField("Email code", text: $emailCode).textFieldStyle(.roundedBorder).keyboardType(.numberPad).accessibilityLabel("Email verification code") }
+                } else {
+                    TextField("Invitation code", text: $pairingCode).textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.roundedBorder).accessibilityLabel("Invitation code")
+                    TextField("Invited email", text: $email).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).keyboardType(.emailAddress)
+                    TextField("Your name (optional)", text: $name).textFieldStyle(.roundedBorder)
+                }
             }
             if let authError = store.authError { Text(authError).font(.footnote).foregroundStyle(OneTheme.amber).accessibilityAddTraits(.isStaticText) }
-            Button { isSubmitting = true; Task { if mode == 0 { await store.login(pairingCode: pairingCode) } else if mode == 2 { await store.acceptFamilyInvite(code: pairingCode, displayName: name.isEmpty ? nil : name) } else if let code = await store.bootstrapAccount(BootstrapAccountRequest(displayName: name, email: email.isEmpty ? nil : email, homeName: homeName.isEmpty ? "ONE Home" : homeName, role: .caregiver)) { await store.login(pairingCode: code) }; isSubmitting = false } } label: { Label(isSubmitting ? "Working…" : (mode == 0 ? "Sign in" : mode == 1 ? "Create account" : "Join household"), systemImage: "arrow.right").frame(maxWidth: .infinity).padding(16) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).disabled(isSubmitting || (mode == 1 ? (name.isEmpty || !consent) : pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)).accessibilityHint("Account access is protected by a backend session")
+            Button { isSubmitting = true; Task { if mode == 0 || mode == 1 { if emailChallenge { await store.login(email: email, code: emailCode) } else { let purpose = mode == 1 ? "create" : "login"; emailChallenge = await store.requestEmailCode(email: email, purpose: purpose, displayName: mode == 1 ? name : nil, homeName: homeName.isEmpty ? "ONE Home" : homeName) != nil } } else { await store.acceptFamilyInvite(code: pairingCode, displayName: name.isEmpty ? nil : name, email: email.isEmpty ? nil : email) }; isSubmitting = false } } label: { Label(isSubmitting ? "Working…" : (mode == 0 ? (emailChallenge ? "Sign in" : "Email me a code") : mode == 1 ? (emailChallenge ? "Verify account" : "Email me a code") : "Join household"), systemImage: "arrow.right").frame(maxWidth: .infinity).padding(16) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).disabled(isSubmitting || (mode == 1 ? (name.isEmpty || email.isEmpty || !consent || (emailChallenge && emailCode.isEmpty)) : mode == 0 ? (email.isEmpty || (emailChallenge && emailCode.isEmpty)) : (pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || email.isEmpty))).accessibilityHint("Account access is protected by a backend session")
             Spacer()
-        }.padding(24).background(OneTheme.canvas.ignoresSafeArea()).task { await store.checkBackend() }
+        }.padding(24).background(OneTheme.canvas.ignoresSafeArea()).onChange(of: mode) { _, _ in emailChallenge = false; emailCode = ""; pairingCode = ""; store.authError = nil }.task { await store.checkBackend() }
     }
 }
 

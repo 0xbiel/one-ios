@@ -21,6 +21,9 @@ struct CanonicalAPIError: Codable, Sendable {
 }
 
 struct PairingChallengeRequest: Codable, Sendable { let code: String }
+struct EmailAuthRequest: Codable, Sendable { let email: String; let purpose: String; let displayName: String?; let homeName: String; let role: UserRole }
+struct EmailAuthVerifyRequest: Codable, Sendable { let email: String; let code: String }
+struct EmailAuthChallenge: Codable, Sendable { let verificationID: UUID; let expiresInSeconds: Int; let delivery: String; let devCode: String?; let email: String; let purpose: String; let homeID: UUID; let userID: UUID; let role: String }
 struct PairingChallengeResponse: Codable, Sendable {
     let pairingID: UUID
     let expiresAt: Date
@@ -42,7 +45,7 @@ struct AuthSession: Codable, Sendable, Equatable {
     let expiresAt: Date?
 }
 struct BootstrapAccountRequest: Codable, Sendable { let displayName: String; let email: String?; let homeName: String; let role: UserRole }
-struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String? }
+struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String?; let email: String? }
 struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
 struct ConsentRequest: Codable, Sendable { let purpose: String; let policyVersion: String; let granted: Bool }
 struct MedicationPlan: Codable, Identifiable, Sendable, Equatable {
@@ -118,6 +121,8 @@ protocol OneAPIClient: Sendable {
     func health() async throws -> BackendHealthResponse
     func createPairingChallenge(_ request: PairingChallengeRequest) async throws -> PairingChallengeResponse
     func completePairing(code: String) async throws -> AuthSession
+    func requestEmailCode(_ request: EmailAuthRequest) async throws -> EmailAuthChallenge
+    func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
@@ -138,6 +143,8 @@ struct MockOneAPIClient: OneAPIClient {
     func health() async throws -> BackendHealthResponse { BackendHealthResponse(status: "ok", database: "demo", localInferenceModel: "qwen3.6-35b-a3b") }
     func createPairingChallenge(_ request: PairingChallengeRequest) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(300)) }
     func completePairing(code: String) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
+    func requestEmailCode(_ request: EmailAuthRequest) async throws -> EmailAuthChallenge { EmailAuthChallenge(verificationID: UUID(), expiresInSeconds: 600, delivery: "development_outbox", devCode: "482701", email: request.email, purpose: request.purpose, homeID: UUID(), userID: UUID(), role: request.role.rawValue) }
+    func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(600), accessToken: "demo", homeID: UUID(), userID: UUID(), role: request.role.rawValue) }
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
@@ -193,6 +200,19 @@ struct HTTPOneAPIClient: OneAPIClient {
             let authenticated = HTTPOneAPIClient(baseURL: baseURL, accessToken: response.accessToken, homeID: homeID, session: session)
             role = (try? await authenticated.currentRole()) ?? .caregiver
         }
+        return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: role, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
+    }
+
+    func requestEmailCode(_ request: EmailAuthRequest) async throws -> EmailAuthChallenge {
+        let body = try JSONEncoder.one.encode(request)
+        return try await send(path: "/auth/email/request", method: "POST", body: body, requiresSession: false)
+    }
+
+    func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendPairingResponse = try await send(path: "/auth/email/verify", method: "POST", body: body, requiresSession: false)
+        guard let homeID = UUID(uuidString: response.homeID), let userID = UUID(uuidString: response.userID) else { throw OneAPIError.invalidResponse }
+        let role = UserRole(rawValue: response.role ?? "caregiver") ?? .caregiver
         return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: role, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 

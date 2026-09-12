@@ -190,6 +190,23 @@ final class AppStore {
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
 
+    func requestEmailCode(email: String, purpose: String, displayName: String? = nil, homeName: String = "ONE Home") async -> String? {
+        authError = nil
+        do {
+            let challenge = try await apiClient.requestEmailCode(EmailAuthRequest(email: email.trimmingCharacters(in: .whitespacesAndNewlines), purpose: purpose, displayName: displayName, homeName: homeName, role: .caregiver))
+            return challenge.devCode
+        } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not send the email code."; return nil }
+    }
+
+    func login(email: String, code: String) async {
+        authError = nil
+        do {
+            let authenticated = try await apiClient.verifyEmailCode(EmailAuthVerifyRequest(email: email, code: code))
+            try sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
+            applySession(authenticated)
+        } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
+    }
+
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String? = nil) async -> String? {
         authError = nil
         do {
@@ -201,9 +218,9 @@ final class AppStore {
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not create the household."; return nil }
     }
 
-    func acceptFamilyInvite(code: String, displayName: String?) async {
+    func acceptFamilyInvite(code: String, displayName: String?, email: String? = nil) async {
         authError = nil
-        do { applySession(try await apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(code: code, displayName: displayName))) }
+        do { applySession(try await apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(code: code, displayName: displayName, email: email))) }
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not join the household." }
     }
 
