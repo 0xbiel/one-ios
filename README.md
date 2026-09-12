@@ -1,0 +1,60 @@
+# ONE iOS
+
+Native SwiftUI iOS 26 shell for the ONE assisted daily check-in experience.
+
+## Scope
+
+This vertical slice includes caregiver overview, a family care-circle view with least-privilege roles, shared medication reminders, approximate home map, event review, resident push-to-talk assistant, granular privacy controls, Keychain/session abstractions, encrypted artifact primitives, accessibility labels, demo data, and a RoomPlan capture surface guarded by LiDAR capability checks.
+
+Room scans use a versioned normalized model (`units = m`, `upAxis = Y`) and should remain local by default. Observations are explicitly non-diagnostic.
+
+## Build
+
+Open `One.xcodeproj` in Xcode 27 or newer. The project targets iOS 26.0. RoomPlan requires a physical LiDAR-capable device; the simulator and non-LiDAR devices show the manual-zone fallback.
+
+The app includes a small `HTTPOneAPIClient` for the versioned FastAPI contract,
+while the UI remains seeded with safe demo data until a user completes pairing
+and a consented session is supplied. `OneApp` performs an unauthenticated
+`GET /api/v1/health` check at launch when a real endpoint is configured; a
+failed check is shown as “Backend unavailable” rather than silently implying a
+live connection. Room upload, LiveKit token, export, and deletion methods all
+require an explicit home/session credential.
+
+### Sign-in and sign-out
+
+On a real endpoint, the app opens on a pairing-code sign-in screen. Enter the
+one-time code produced by the backend pairing flow; the app exchanges it at
+`POST /api/v1/pairing/complete`, verifies the account role through
+`GET /api/v1/me`, and stores the bearer session envelope in Keychain. Sign out
+calls `DELETE /api/v1/sessions/current` and clears the Keychain entry even when
+the network is temporarily unavailable. Loopback remains deterministic demo
+mode and does not require sign-in.
+
+## API endpoint configuration
+
+`RuntimeConfiguration` reads `ONE_API_BASE_URL` from the generated Info.plist
+and treats the loopback value `http://127.0.0.1:8000/api/v1` as simulator/demo
+mode. For a LAN or Tailscale deployment, set the build setting to the backend
+HTTPS base URL, for example `https://one-api.<tailnet-name>.ts.net/api/v1`;
+keep authentication and certificates out of source control. A convenient
+same-origin setup is `tailscale serve --bg http://127.0.0.1:4173`, which routes
+the web container’s `/api/` proxy to FastAPI; use the printed HTTPS URL plus
+`/api/v1` for `ONE_API_BASE_URL` on a phone.
+The phone and host must both be on the same Tailnet, and the HTTPS URL must be
+reachable from the phone before pairing. Never commit pairing codes, bearer
+tokens, bootstrap secrets, or private certificates.
+
+Family mode maps to the backend’s current routes: `GET /api/v1/homes/{home_id}/family/members`, `POST /api/v1/homes/{home_id}/family/invites`, `GET /api/v1/homes/{home_id}/medication-plans`, `GET /api/v1/homes/{home_id}/medication-reminders`, `POST /api/v1/homes/{home_id}/medication-plans/{plan_id}/check-ins`, and `POST /api/v1/homes/{home_id}/family-assistant`. The server enforces purpose-specific
+consents, same-home roles, caregiver assignment, optimistic plan versions,
+and administrative (not clinical) dose states. The backend remains the
+canonical contract owner at `one/contracts/openapi.json`; this repository pins
+the reviewed snapshot at `contracts/openapi.json` so a standalone checkout can
+be inspected and built. Update the snapshot and manual adapter together when
+the backend contract tag changes. Swift OpenAPI Generator integration is a
+follow-up once the generated transport layer replaces `HTTPOneAPIClient`.
+
+LiveKit is self-hosted for the MVP. Compose runs the local development server
+on port `7880` with placeholder credentials; the backend returns its configured
+WebSocket URL in the short-lived token response. A physical iPhone must use a
+host-reachable LAN/Tailscale `ONE_LIVEKIT_URL` (and trusted `wss://` when the
+app is opened from an HTTPS origin); no LiveKit Cloud account is required.

@@ -1,0 +1,38 @@
+name: One
+options:
+  bundleIdPrefix: com.0xbiel
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1,2"
+targets:
+  One:
+    type: application
+    platform: iOS
+    sources:
+      - path: One
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: false
+        INFOPLIST_FILE: One/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.0xbiel.one
+        ONE_API_BASE_URL: "http://127.0.0.1:8000/api/v1"
+    scheme:
+      testTargets:
+        - OneTests
+  OneTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: OneTests
+    dependencies:
+      - target: One
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
+        PRODUCT_BUNDLE_IDENTIFIER: com.0xbiel.one.tests
