@@ -60,6 +60,9 @@ struct MedicationDose: Codable, Identifiable, Sendable {
     var scheduledAt: Date
     var status: MedicationDoseStatus
     var assignedCaregiverName: String?
+    var scheduleRule: String = ""
+    var subjectUserID: UUID? = nil
+    var planID: UUID? = nil
 }
 
 enum ObservationConfidence: String, Codable, CaseIterable {

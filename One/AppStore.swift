@@ -26,6 +26,9 @@ final class AppStore {
     var onboardingConsents: [String: Bool] = ["Daily check-in support": false, "Room and camera data": false, "Medication reminders": false, "Family sharing": false]
     var selectedSubjectName = "Everyone"
     var selectedSubjectID: UUID?
+    var selectedMedicationDate = Date()
+    var inviteCode: String?
+    var mapUploadResult: ArtifactUploadResponse?
     var careRecipients: [CareRecipient] = []
     private let sessionStore: any SessionKeyStore
     let runtimeConfiguration = RuntimeConfiguration()
@@ -139,6 +142,36 @@ final class AppStore {
         authError = nil
         do { applySession(try await apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(code: code, displayName: displayName))) }
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not join the household." }
+    }
+
+    func refreshFamilyData() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do {
+            caregivers = try await apiClient.familyMembers(homeID: session.homeID).map { account in
+                CaregiverAccount(id: account.id, name: account.name, relationship: account.id == session.userID ? "You" : account.relationship, role: account.role, permissions: account.permissions, isCurrentUser: account.id == session.userID)
+            }
+            careRecipients = caregivers.filter { !$0.isCurrentUser }.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
+            if selectedSubjectID == nil { selectedSubjectID = careRecipients.first?.id; selectedSubjectName = careRecipients.first?.name ?? "Everyone" }
+            medicationDoses = try await apiClient.medicationReminders(homeID: session.homeID, subjectUserID: selectedSubjectID, day: selectedMedicationDate)
+        } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not load family data." }
+    }
+
+    func createFamilyInvite(name: String, email: String?) async {
+        guard !runtimeConfiguration.isDemoMode, let session else { inviteCode = "Demo invites require a live household session."; return }
+        do { inviteCode = try await apiClient.createFamilyInvite(homeID: session.homeID, request: FamilyInviteRequest(displayName: name, email: email, role: .caregiver, expiresInSeconds: 86_400)) }
+        catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not create the invitation." }
+    }
+
+    func refreshMedicationReminders() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do { medicationDoses = try await apiClient.medicationReminders(homeID: session.homeID, subjectUserID: selectedSubjectID, day: selectedMedicationDate) }
+        catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not load medication reminders." }
+    }
+
+    func uploadCurrentMap() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do { mapUploadResult = try await apiClient.uploadRoomScan(roomID: scan.id, normalizedJSON: JSONEncoder.one.encode(scan), usdz: nil) }
+        catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the room map." }
     }
 
     private func applySession(_ authenticated: AuthSession) {

@@ -134,7 +134,7 @@ struct MapEvidenceSheet: View { @Bindable var store: AppStore; var body: some Vi
 
 struct FamilyView: View {
     @Bindable var store: AppStore
-    @State private var showInviteConfirmation = false
+    @State private var showInviteSheet = false
     @State private var assistantNote = ""
 
     var body: some View {
@@ -149,7 +149,8 @@ struct FamilyView: View {
                     Picker("Person or household", selection: $store.selectedSubjectName) {
                         Text("Everyone").tag("Everyone")
                         ForEach(store.careRecipients) { recipient in Text(recipient.name).tag(recipient.name) }
-                    }.pickerStyle(.menu).accessibilityLabel("Selected person or household").onChange(of: store.selectedSubjectName) { _, value in store.selectedSubjectID = store.careRecipients.first(where: { $0.name == value })?.id }
+                    }.pickerStyle(.menu).accessibilityLabel("Selected person or household").onChange(of: store.selectedSubjectName) { _, value in store.selectedSubjectID = store.careRecipients.first(where: { $0.name == value })?.id; Task { await store.refreshMedicationReminders() } }
+                    DatePicker("Reminder date", selection: $store.selectedMedicationDate, displayedComponents: .date).datePickerStyle(.compact).onChange(of: store.selectedMedicationDate) { _, _ in Task { await store.refreshMedicationReminders() } }
                     Text("Showing plans and observations for \(store.selectedSubjectName). Switch people before reviewing sensitive details.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
                     peopleSection
                     medicationSection
@@ -160,11 +161,7 @@ struct FamilyView: View {
             .background(OneTheme.canvas.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
             .toolbar(.hidden, for: .navigationBar)
-            .alert("Invite ready", isPresented: $showInviteConfirmation) {
-                Button("Done", role: .cancel) { }
-            } message: {
-                Text("Connect a named caregiver through the backend when invitations are enabled. No access is granted yet.")
-            }
+            .sheet(isPresented: $showInviteSheet) { InviteCaregiverSheet(store: store) }.task { await store.refreshFamilyData() }
         }
     }
 
@@ -173,7 +170,7 @@ struct FamilyView: View {
             HStack(alignment: .bottom) {
                 sectionHeading("PEOPLE WITH ACCESS", "A smaller, safer circle")
                 Spacer()
-                Button { showInviteConfirmation = true } label: {
+                Button { showInviteSheet = true } label: {
                     Image(systemName: "person.badge.plus").font(.headline).frame(width: 44, height: 44)
                 }
                 .buttonStyle(.bordered)
@@ -273,6 +270,26 @@ struct FamilyView: View {
     }
 }
 
+struct InviteCaregiverSheet: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var email = ""
+    var body: some View {
+        NavigationStack { Form {
+            Section("Invite a caregiver") {
+                TextField("Name", text: $name)
+                TextField("Email (optional)", text: $email).textInputAutocapitalization(.never).autocorrectionDisabled()
+            }
+            Section {
+                Text("The invitation is single-use and expires in 24 hours.").font(.footnote).foregroundStyle(.secondary)
+                Button("Create invitation") { Task { await store.createFamilyInvite(name: name, email: email.isEmpty ? nil : email) } }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if let code = store.inviteCode { Section("Share this code") { Text(code).font(.title2.monospaced().weight(.bold)).textSelection(.enabled) } }
+        }.navigationTitle("Invite caregiver").toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } } }
+    }
+}
+
 struct CaregiverAccountRow: View {
     let account: CaregiverAccount
     var body: some View {
@@ -305,6 +322,7 @@ struct MedicationDoseRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(dose.medicationName).font(.headline).foregroundStyle(OneTheme.ink)
                     Text("\(dose.scheduledAt.formatted(date: .omitted, time: .shortened)) · \(dose.instructions)").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
+                    if !dose.scheduleRule.isEmpty { Text("Rule: \(dose.scheduleRule)").font(.caption).foregroundStyle(OneTheme.accentBlue) }
                     Text(dose.assignedCaregiverName.map { "Assigned to \($0)" } ?? "No caregiver assigned").font(.caption).foregroundStyle(OneTheme.secondaryInk)
                 }
                 Spacer()

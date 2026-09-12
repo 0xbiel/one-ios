@@ -43,6 +43,7 @@ struct AuthSession: Codable, Sendable, Equatable {
 }
 struct BootstrapAccountRequest: Codable, Sendable { let displayName: String; let email: String?; let homeName: String; let role: UserRole }
 struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String? }
+struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
 struct ConsentRequest: Codable, Sendable { let purpose: String; let policyVersion: String; let granted: Bool }
 struct LiveKitTokenResponse: Codable, Sendable { let websocketURL: URL; let token: String; let roomName: String; let expiresAt: Date }
 struct ArtifactUploadResponse: Codable, Sendable { let artifactID: UUID; let sha256: String; let expiresAt: Date? }
@@ -77,6 +78,9 @@ protocol OneAPIClient: Sendable {
     func completePairing(code: String) async throws -> AuthSession
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession
+    func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
+    func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
+    func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose]
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws
     func logout() async throws
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
@@ -91,6 +95,9 @@ struct MockOneAPIClient: OneAPIClient {
     func completePairing(code: String) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(600), accessToken: "demo", homeID: UUID(), userID: UUID(), role: request.role.rawValue) }
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
+    func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
+    func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String { "123456" }
+    func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] { [] }
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws { }
     func logout() async throws { }
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
@@ -154,6 +161,27 @@ struct HTTPOneAPIClient: OneAPIClient {
         return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: response.role == "resident" ? .resident : .caregiver, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 
+    func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] {
+        let response: BackendFamilyMembersResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members", method: "GET", body: nil, requiresSession: true)
+        return response.data.compactMap { $0.account }
+    }
+
+    func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendFamilyInviteResponse = try await send(path: "/homes/\(homeID.uuidString)/family/invites", method: "POST", body: body, requiresSession: true)
+        return response.code
+    }
+
+    func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.uuidString)/medication-reminders"), resolvingAgainstBaseURL: false)!
+        let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.dateFormat = "yyyy-MM-dd"; formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        var query = [URLQueryItem(name: "day", value: formatter.string(from: day))]
+        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.uuidString)) }
+        components.queryItems = query
+        let response: BackendMedicationRemindersResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
+        return response.data.compactMap { $0.dose }
+    }
+
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws {
         let body = try JSONEncoder.one.encode(request)
         let _: BackendConsentResponse = try await send(path: "/homes/\(homeID.uuidString)/consents", method: "POST", body: body, requiresSession: true)
@@ -172,7 +200,7 @@ struct HTTPOneAPIClient: OneAPIClient {
         let mapData = try JSONSerialization.jsonObject(with: normalizedJSON)
         let payload: [String: Any] = ["room_id": roomID.uuidString, "coordinate_frame": "roomplan-local", "map_data": mapData]
         let body = try JSONSerialization.data(withJSONObject: payload)
-        let response: BackendIDResponse = try await send(path: "/homes/\(homeID.uuidString)/maps", method: "POST", body: body, requiresSession: true)
+        let response: BackendMapUploadResponse = try await send(path: "/homes/\(homeID.uuidString)/maps", method: "POST", body: body, requiresSession: true)
         let digest = SHA256.hash(data: normalizedJSON).map { String(format: "%02x", $0) }.joined()
         return ArtifactUploadResponse(artifactID: UUID(uuidString: response.id) ?? UUID(), sha256: digest, expiresAt: nil)
     }
@@ -214,6 +242,20 @@ struct HTTPOneAPIClient: OneAPIClient {
         return decoded
     }
 
+    private func send<T: Decodable>(url: URL, method: String, body: Data?, requiresSession: Bool) async throws -> T {
+        try await sendRequest(url: url, method: method, body: body, requiresSession: requiresSession, headers: [:])
+    }
+
+    private func sendRequest<T: Decodable>(url: URL, method: String, body: Data?, requiresSession: Bool, headers: [String: String]) async throws -> T {
+        if requiresSession && (accessToken == nil || homeID == nil) { throw OneAPIError.missingSession }
+        var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        if let accessToken { request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization") }
+        let (data, response) = try await session.data(for: request); guard let http = response as? HTTPURLResponse else { throw OneAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else { let message = (try? JSONDecoder.one.decode(APIProblem.self, from: data).message) ?? "The ONE API request failed."; throw OneAPIError.server(status: http.statusCode, message: message) }
+        guard let decoded = try? JSONDecoder.one.decode(T.self, from: data) else { throw OneAPIError.invalidResponse }; return decoded
+    }
+
     private func sendEmpty(path: String, method: String) async throws {
         guard accessToken != nil else { throw OneAPIError.missingSession }
         var request = URLRequest(url: baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))))
@@ -230,16 +272,43 @@ private struct BackendMeResponse: Decodable { let actor: BackendActor }
 private struct BackendActor: Decodable { let role: String }
 private struct BackendConsentResponse: Decodable { let id: String? }
 private struct BackendIDResponse: Decodable { let id: String }
+private struct BackendMapUploadResponse: Decodable { let id: String; let revision: Int? }
 private struct BackendLiveKitResponse: Decodable { let url: String; let token: String; let expiresIn: Int }
 private struct BackendExportResponse: Decodable { let homeID: String }
 private struct BackendDeletionResponse: Decodable { let requestID: String; let status: String }
+private struct BackendFamilyInviteResponse: Decodable { let code: String }
+private struct BackendFamilyMembersResponse: Decodable { let data: [BackendFamilyMember] }
+private struct BackendFamilyMember: Decodable {
+    let id: String; let displayName: String; let email: String?; let role: String
+    var account: CaregiverAccount? {
+        guard let uuid = UUID(uuidString: id) else { return nil }
+        let accessRole: CaregiverAccessRole = role == "admin" ? .owner : (role == "caregiver" ? .primaryCaregiver : (CaregiverAccessRole(rawValue: role) ?? .viewer))
+        return CaregiverAccount(id: uuid, name: displayName, relationship: email ?? "Household member", role: accessRole, permissions: accessRole == .viewer ? ["View today"] : ["Review events"], isCurrentUser: false)
+    }
+}
+private struct BackendMedicationRemindersResponse: Decodable { let data: [BackendMedicationReminder] }
+private struct BackendMedicationReminder: Decodable {
+    let planID: String; let name: String; let medicationDose: String; let instructions: String; let scheduleRule: String; let scheduledFor: Date; let status: String; let assignedCaregiverName: String?
+    var dose: MedicationDose? {
+        guard let planID = UUID(uuidString: planID) else { return nil }
+        let status = status == "taken" ? MedicationDoseStatus.acknowledged : status == "missed" ? .missed : status == "skipped" ? .needsConfirmation : .scheduled
+        return MedicationDose(id: UUID(), medicationName: "\(name) · \(medicationDose)", instructions: instructions, scheduledAt: scheduledFor, status: status, assignedCaregiverName: assignedCaregiverName, scheduleRule: scheduleRule, planID: planID)
+    }
+}
 
 private extension JSONEncoder {
     static var one: JSONEncoder { let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase; return encoder }
 }
 
 private extension JSONDecoder {
-    static var one: JSONDecoder { let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase; return decoder }
+    static var one: JSONDecoder { let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase; decoder.dateDecodingStrategy = .custom { decoder in
+        let value = try decoder.singleValueContainer().decode(String.self)
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        guard let date = formatter.date(from: value) else { throw DecodingError.dataCorruptedError(in: decoder.singleValueContainer(), debugDescription: "Invalid ISO-8601 date") }
+        return date
+    }; return decoder }
 }
 
 protocol LiveKitViewingSession: Sendable {
