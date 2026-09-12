@@ -18,6 +18,9 @@ final class AppStore {
     var lastDataRequest: DataRequest?
     var caregivers: [CaregiverAccount]
     var medicationDoses: [MedicationDose]
+    var medicationPlans: [MedicationPlan] = []
+    var isMedicationLoading = false
+    var isMedicationMutating = false
     var backendState: BackendConnectionState
     var apiClient: any OneAPIClient
     var session: AuthSession?
@@ -33,9 +36,9 @@ final class AppStore {
     private let sessionStore: any SessionKeyStore
     let runtimeConfiguration = RuntimeConfiguration()
 
-    init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], medicationDoses: [MedicationDose] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore()) {
+    init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], medicationDoses: [MedicationDose] = [], medicationPlans: [MedicationPlan] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore()) {
         self.events = events; self.scan = scan; self.consents = consents
-        self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore
+        self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.medicationPlans = medicationPlans; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore
         self.careRecipients = caregivers.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
     }
 
@@ -104,6 +107,66 @@ final class AppStore {
         medicationDoses.append(MedicationDose(id: UUID(), medicationName: "New reminder", instructions: "Add instructions", scheduledAt: Date().addingTimeInterval(3600), status: .scheduled, assignedCaregiverName: nil))
     }
 
+    func refreshMedicationPlans() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        isMedicationLoading = true
+        defer { isMedicationLoading = false }
+        do {
+            medicationPlans = try await apiClient.medicationPlans(homeID: session.homeID, subjectUserID: selectedSubjectID, activeOnly: true)
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not load medication plans."
+        }
+    }
+
+    func createMedicationPlan(name: String, dose: String, instructions: String, schedule: String, assignedCaregiverID: UUID?, subjectUserID: UUID?) async -> Bool {
+        guard !runtimeConfiguration.isDemoMode, let session else {
+            addReminder()
+            return true
+        }
+        let subjectID = subjectUserID ?? selectedSubjectID ?? session.userID
+        isMedicationMutating = true
+        defer { isMedicationMutating = false }
+        do {
+            let plan = try await apiClient.createMedicationPlan(homeID: session.homeID, request: MedicationPlanRequest(subjectUserID: subjectID, name: name, dose: dose, schedule: schedule, instructions: instructions, active: true, assignedCaregiverID: assignedCaregiverID))
+            medicationPlans.append(plan)
+            await refreshMedicationReminders()
+            return true
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not save the medication plan."
+            return false
+        }
+    }
+
+    func updateMedicationPlan(_ plan: MedicationPlan, name: String, dose: String, instructions: String, schedule: String, active: Bool, assignedCaregiverID: UUID?) async -> Bool {
+        guard !runtimeConfiguration.isDemoMode, let session else { return false }
+        isMedicationMutating = true
+        defer { isMedicationMutating = false }
+        do {
+            let updated = try await apiClient.updateMedicationPlan(homeID: session.homeID, planID: plan.id, request: MedicationPlanUpdateRequest(name: name, dose: dose, schedule: schedule, instructions: instructions, active: active, assignedCaregiverID: assignedCaregiverID, version: plan.version))
+            if let index = medicationPlans.firstIndex(where: { $0.id == updated.id }) { medicationPlans[index] = updated }
+            await refreshMedicationReminders()
+            return true
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not update the medication plan."
+            return false
+        }
+    }
+
+    func archiveMedicationPlan(_ plan: MedicationPlan) async -> Bool {
+        guard !runtimeConfiguration.isDemoMode, let session else { return false }
+        isMedicationMutating = true
+        defer { isMedicationMutating = false }
+        do {
+            _ = try await apiClient.updateMedicationPlan(homeID: session.homeID, planID: plan.id, request: MedicationPlanUpdateRequest(name: nil, dose: nil, schedule: nil, instructions: nil, active: false, assignedCaregiverID: nil, version: plan.version))
+            medicationPlans.removeAll { $0.id == plan.id }
+            await refreshMedicationReminders()
+            return true
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not archive the medication plan."
+            return false
+        }
+    }
+
     func checkBackend() async {
         guard !runtimeConfiguration.isDemoMode, session != nil else { backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable; return }
         backendState = .checking
@@ -152,6 +215,7 @@ final class AppStore {
             }
             careRecipients = caregivers.filter { !$0.isCurrentUser }.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
             if selectedSubjectID == nil { selectedSubjectID = careRecipients.first?.id; selectedSubjectName = careRecipients.first?.name ?? "Everyone" }
+            medicationPlans = try await apiClient.medicationPlans(homeID: session.homeID, subjectUserID: selectedSubjectID, activeOnly: true)
             medicationDoses = try await apiClient.medicationReminders(homeID: session.homeID, subjectUserID: selectedSubjectID, day: selectedMedicationDate)
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not load family data." }
     }

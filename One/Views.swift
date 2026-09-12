@@ -135,6 +135,9 @@ struct MapEvidenceSheet: View { @Bindable var store: AppStore; var body: some Vi
 struct FamilyView: View {
     @Bindable var store: AppStore
     @State private var showInviteSheet = false
+    @State private var showMedicationPlanSheet = false
+    @State private var editingMedicationPlan: MedicationPlan?
+    @State private var planToArchive: MedicationPlan?
     @State private var assistantNote = ""
 
     var body: some View {
@@ -149,7 +152,7 @@ struct FamilyView: View {
                     Picker("Person or household", selection: $store.selectedSubjectName) {
                         Text("Everyone").tag("Everyone")
                         ForEach(store.careRecipients) { recipient in Text(recipient.name).tag(recipient.name) }
-                    }.pickerStyle(.menu).accessibilityLabel("Selected person or household").onChange(of: store.selectedSubjectName) { _, value in store.selectedSubjectID = store.careRecipients.first(where: { $0.name == value })?.id; Task { await store.refreshMedicationReminders() } }
+                    }.pickerStyle(.menu).accessibilityLabel("Selected person or household").onChange(of: store.selectedSubjectName) { _, value in store.selectedSubjectID = store.careRecipients.first(where: { $0.name == value })?.id; Task { await store.refreshMedicationReminders(); await store.refreshMedicationPlans() } }
                     DatePicker("Reminder date", selection: $store.selectedMedicationDate, displayedComponents: .date).datePickerStyle(.compact).onChange(of: store.selectedMedicationDate) { _, _ in Task { await store.refreshMedicationReminders() } }
                     Text("Showing plans and observations for \(store.selectedSubjectName). Switch people before reviewing sensitive details.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
                     peopleSection
@@ -161,7 +164,15 @@ struct FamilyView: View {
             .background(OneTheme.canvas.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
             .toolbar(.hidden, for: .navigationBar)
-            .sheet(isPresented: $showInviteSheet) { InviteCaregiverSheet(store: store) }.task { await store.refreshFamilyData() }
+            .sheet(isPresented: $showInviteSheet) { InviteCaregiverSheet(store: store) }
+            .sheet(isPresented: $showMedicationPlanSheet) { MedicationPlanSheet(store: store, plan: editingMedicationPlan, subjectName: store.selectedSubjectName) }
+            .confirmationDialog("Archive this medication plan?", item: $planToArchive) { plan in
+                Button("Archive plan", role: .destructive) { Task { _ = await store.archiveMedicationPlan(plan) } }
+                Button("Cancel", role: .cancel) { }
+            } message: { plan in
+                Text("\(plan.name) will stop creating future reminders, while its history stays available.")
+            }
+            .task { await store.refreshFamilyData() }
         }
     }
 
@@ -194,12 +205,13 @@ struct FamilyView: View {
             HStack(alignment: .bottom) {
                 sectionHeading("TODAY'S PLAN", "Medication reminders · " + store.selectedSubjectName)
                 Spacer()
-                Button { store.addReminder() } label: {
+                Button { editingMedicationPlan = nil; showMedicationPlanSheet = true } label: {
                     Label("Add", systemImage: "plus").font(.subheadline.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
                 .tint(OneTheme.accentBlue)
                 .accessibilityLabel("Add medication reminder")
+                .disabled(store.isMedicationMutating)
             }
             if let nextDose = nextDose {
                 SurfaceCard(radius: 24) {
@@ -224,6 +236,40 @@ struct FamilyView: View {
             }
             .padding(.horizontal, 16).background(OneTheme.surface, in: .rect(cornerRadius: 26))
             .overlay(.black.opacity(0.04), in: .rect(cornerRadius: 26))
+            if !store.runtimeConfiguration.isDemoMode {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text("ACTIVE PLAN RULES").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(OneTheme.secondaryInk)
+                        Spacer()
+                        if store.isMedicationLoading { ProgressView().controlSize(.small).accessibilityLabel("Loading medication plans") }
+                    }
+                    if store.medicationPlans.isEmpty && !store.isMedicationLoading {
+                        Text("No active plan for this person yet. Add a schedule rule to start a shared rhythm.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk).padding(.vertical, 12)
+                    }
+                    ForEach(store.medicationPlans) { plan in
+                        HStack(alignment: .center, spacing: 12) {
+                            Image(systemName: "calendar.badge.clock").foregroundStyle(OneTheme.accentBlue).frame(width: 30, height: 30).background(OneTheme.accentBlue.opacity(0.10), in: Circle())
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(plan.name).font(.headline).foregroundStyle(OneTheme.ink)
+                                Text("\(plan.dose) · \(plan.schedule)").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
+                                if !plan.instructions.isEmpty { Text(plan.instructions).font(.caption).foregroundStyle(OneTheme.secondaryInk) }
+                            }
+                            Spacer()
+                            Button("Edit") { editingMedicationPlan = plan; showMedicationPlanSheet = true }
+                                .buttonStyle(.bordered).tint(OneTheme.accentBlue)
+                                .accessibilityLabel("Edit \(plan.name)")
+                        }
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { planToArchive = plan } label: { Label("Archive", systemImage: "archivebox") }
+                        }
+                        if plan.id != store.medicationPlans.last?.id { Divider().padding(.leading, 42) }
+                    }
+                }
+                .padding(.top, 12)
+                .accessibilityElement(children: .contain)
+            }
             Text("Reminders support organization only. Confirm medication decisions with the resident and their care team.")
                 .font(.footnote).foregroundStyle(OneTheme.secondaryInk)
         }
@@ -267,6 +313,89 @@ struct FamilyView: View {
             Text(eyebrow).font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(OneTheme.secondaryInk)
             Text(title).font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(OneTheme.ink)
         }
+    }
+}
+
+struct MedicationPlanSheet: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let plan: MedicationPlan?
+    let subjectName: String
+    @State private var name: String
+    @State private var dose: String
+    @State private var instructions: String
+    @State private var schedule: String
+    @State private var active: Bool
+    @State private var assignedCaregiverID: UUID?
+    @State private var validationMessage = ""
+
+    init(store: AppStore, plan: MedicationPlan?, subjectName: String) {
+        self.store = store; self.plan = plan; self.subjectName = subjectName
+        _name = State(initialValue: plan?.name ?? "")
+        _dose = State(initialValue: plan?.dose ?? "")
+        _instructions = State(initialValue: plan?.instructions ?? "")
+        _schedule = State(initialValue: plan?.schedule ?? "")
+        _active = State(initialValue: plan?.active ?? true)
+        _assignedCaregiverID = State(initialValue: plan?.assignedCaregiverID)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("For this person") {
+                    Label(subjectName, systemImage: "person.crop.circle").foregroundStyle(OneTheme.ink)
+                    Text("Plans are date-aware: use daily, weekday, weekly, or specific-date rules.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
+                }
+                Section("Reminder details") {
+                    TextField("Medication or reminder name", text: $name)
+                    TextField("Dose", text: $dose)
+                    TextField("Instructions (optional)", text: $instructions, axis: .vertical).lineLimit(2...4)
+                    TextField("Schedule rule", text: $schedule, prompt: Text("Mon,Wed,Fri @ 08:00"))
+                        .textInputAutocapitalization(.never)
+                    Text("Examples: Daily @ 08:00 · Tue,Thu @ 20:00 · 2026-09-20 @ 10:00").font(.caption).foregroundStyle(OneTheme.secondaryInk)
+                }
+                Section("Care circle") {
+                    Picker("Assigned caregiver", selection: $assignedCaregiverID) {
+                        Text("Unassigned").tag(Optional<UUID>.none)
+                        ForEach(store.caregivers.filter { $0.role != .viewer }) { caregiver in
+                            Text(caregiver.name).tag(Optional(caregiver.id))
+                        }
+                    }
+                    if plan != nil { Toggle("Active plan", isOn: $active).tint(OneTheme.accentBlue) }
+                }
+                if !validationMessage.isEmpty { Section { Text(validationMessage).foregroundStyle(.red).accessibilityAddTraits(.isStaticText) } }
+                if let authError = store.authError, !authError.isEmpty { Section { Text(authError).foregroundStyle(.red).accessibilityAddTraits(.isStaticText) } }
+                Section {
+                    Button {
+                        Task { await save() }
+                    } label: {
+                        HStack { Spacer(); if store.isMedicationMutating { ProgressView().controlSize(.small) }; Text(store.isMedicationMutating ? "Saving…" : (plan == nil ? "Add plan" : "Save changes")).fontWeight(.semibold); Spacer() }
+                    }
+                    .disabled(store.isMedicationMutating)
+                }
+            }
+            .navigationTitle(plan == nil ? "Add medication plan" : "Edit medication plan")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+
+    private func save() async {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDose = dose.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSchedule = schedule.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, !trimmedDose.isEmpty, !trimmedSchedule.isEmpty else {
+            validationMessage = "Name, dose, and a schedule rule are required."
+            return
+        }
+        validationMessage = ""
+        let succeeded: Bool
+        if let plan {
+            succeeded = await store.updateMedicationPlan(plan, name: trimmedName, dose: trimmedDose, instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines), schedule: trimmedSchedule, active: active, assignedCaregiverID: assignedCaregiverID)
+        } else {
+            succeeded = await store.createMedicationPlan(name: trimmedName, dose: trimmedDose, instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines), schedule: trimmedSchedule, assignedCaregiverID: assignedCaregiverID, subjectUserID: store.selectedSubjectID)
+        }
+        if succeeded { dismiss() }
     }
 }
 

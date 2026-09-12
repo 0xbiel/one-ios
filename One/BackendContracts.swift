@@ -45,6 +45,48 @@ struct BootstrapAccountRequest: Codable, Sendable { let displayName: String; let
 struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String? }
 struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
 struct ConsentRequest: Codable, Sendable { let purpose: String; let policyVersion: String; let granted: Bool }
+struct MedicationPlan: Codable, Identifiable, Sendable, Equatable {
+    let id: UUID
+    let subjectUserID: UUID
+    var name: String
+    var dose: String
+    var schedule: String
+    var instructions: String
+    var active: Bool
+    var version: Int
+    var assignedCaregiverID: UUID?
+}
+struct MedicationPlanRequest: Codable, Sendable {
+    let subjectUserID: UUID
+    let name: String
+    let dose: String
+    let schedule: String
+    let instructions: String
+    let active: Bool
+    let assignedCaregiverID: UUID?
+}
+struct MedicationPlanUpdateRequest: Codable, Sendable {
+    let name: String?
+    let dose: String?
+    let schedule: String?
+    let instructions: String?
+    let active: Bool?
+    let assignedCaregiverID: UUID?
+    let version: Int?
+
+    private enum CodingKeys: String, CodingKey { case name, dose, schedule, instructions, active, assignedCaregiverID, version }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(name, forKey: .name)
+        try container.encodeIfPresent(dose, forKey: .dose)
+        try container.encodeIfPresent(schedule, forKey: .schedule)
+        try container.encodeIfPresent(instructions, forKey: .instructions)
+        try container.encodeIfPresent(active, forKey: .active)
+        try container.encodeIfPresent(assignedCaregiverID, forKey: .assignedCaregiverID)
+        try container.encodeIfPresent(version, forKey: .version)
+    }
+}
 struct LiveKitTokenResponse: Codable, Sendable { let websocketURL: URL; let token: String; let roomName: String; let expiresAt: Date }
 struct ArtifactUploadResponse: Codable, Sendable { let artifactID: UUID; let sha256: String; let expiresAt: Date? }
 struct DataRequestResponse: Codable, Sendable { let requestID: UUID; let status: String }
@@ -80,6 +122,9 @@ protocol OneAPIClient: Sendable {
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
+    func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan]
+    func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan
+    func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan
     func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose]
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws
     func logout() async throws
@@ -97,6 +142,9 @@ struct MockOneAPIClient: OneAPIClient {
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String { "123456" }
+    func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan] { [] }
+    func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan { MedicationPlan(id: UUID(), subjectUserID: request.subjectUserID, name: request.name, dose: request.dose, schedule: request.schedule, instructions: request.instructions, active: request.active, version: 1, assignedCaregiverID: request.assignedCaregiverID) }
+    func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan { MedicationPlan(id: planID, subjectUserID: UUID(), name: request.name ?? "Reminder", dose: request.dose ?? "", schedule: request.schedule ?? "", instructions: request.instructions ?? "", active: request.active ?? true, version: (request.version ?? 1) + 1, assignedCaregiverID: request.assignedCaregiverID) }
     func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] { [] }
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws { }
     func logout() async throws { }
@@ -170,6 +218,29 @@ struct HTTPOneAPIClient: OneAPIClient {
         let body = try JSONEncoder.one.encode(request)
         let response: BackendFamilyInviteResponse = try await send(path: "/homes/\(homeID.uuidString)/family/invites", method: "POST", body: body, requiresSession: true)
         return response.code
+    }
+
+    func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool = true) async throws -> [MedicationPlan] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.uuidString)/medication-plans"), resolvingAgainstBaseURL: false)!
+        var query = [URLQueryItem(name: "active_only", value: activeOnly ? "true" : "false")]
+        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.uuidString)) }
+        components.queryItems = query
+        let response: BackendMedicationPlansResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
+        return response.data.compactMap { $0.plan }
+    }
+
+    func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendMedicationPlan = try await send(path: "/homes/\(homeID.uuidString)/medication-plans", method: "POST", body: body, requiresSession: true)
+        guard let plan = response.plan else { throw OneAPIError.invalidResponse }
+        return plan
+    }
+
+    func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendMedicationPlan = try await send(path: "/homes/\(homeID.uuidString)/medication-plans/\(planID.uuidString)", method: "PATCH", body: body, requiresSession: true)
+        guard let plan = response.plan else { throw OneAPIError.invalidResponse }
+        return plan
     }
 
     func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] {
@@ -287,6 +358,23 @@ private struct BackendFamilyMember: Decodable {
     }
 }
 private struct BackendMedicationRemindersResponse: Decodable { let data: [BackendMedicationReminder] }
+private struct BackendMedicationPlansResponse: Decodable { let data: [BackendMedicationPlan] }
+private struct BackendMedicationPlan: Decodable {
+    let id: String
+    let subjectUserID: String
+    let name: String
+    let dose: String
+    let schedule: String
+    let instructions: String
+    let active: Bool
+    let version: Int
+    let assignedCaregiverID: String?
+
+    var plan: MedicationPlan? {
+        guard let id = UUID(uuidString: id), let subjectUserID = UUID(uuidString: subjectUserID) else { return nil }
+        return MedicationPlan(id: id, subjectUserID: subjectUserID, name: name, dose: dose, schedule: schedule, instructions: instructions, active: active, version: version, assignedCaregiverID: assignedCaregiverID.flatMap(UUID.init(uuidString:)))
+    }
+}
 private struct BackendMedicationReminder: Decodable {
     let planID: String; let name: String; let medicationDose: String; let instructions: String; let scheduleRule: String; let scheduledFor: Date; let status: String; let assignedCaregiverName: String?
     var dose: MedicationDose? {
