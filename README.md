@@ -12,8 +12,8 @@ Room scans use a versioned normalized model (`units = m`, `upAxis = Y`) and shou
 
 Open `One.xcodeproj` in Xcode 27 or newer. The project targets iOS 26.0. RoomPlan requires a physical LiDAR-capable device; the simulator and non-LiDAR devices show the manual-zone fallback.
 
-The app includes a small `HTTPOneAPIClient` for the versioned FastAPI contract,
-while the UI remains seeded with safe demo data until a user completes pairing
+The app includes a small `HTTPOneAPIClient` for the versioned FastAPI contract.
+The UI keeps safe demo fixtures for maps/events while a user completes pairing
 and a consented session is supplied. `OneApp` performs an unauthenticated
 `GET /api/v1/health` check at launch when a real endpoint is configured; a
 failed check is shown as “Backend unavailable” rather than silently implying a
@@ -29,6 +29,21 @@ one-time code produced by the backend pairing flow; the app exchanges it at
 calls `DELETE /api/v1/sessions/current` and clears the Keychain entry even when
 the network is temporarily unavailable. Loopback remains deterministic demo
 mode and does not require sign-in.
+
+The same entry screen also supports creating a household account through
+`POST /api/v1/pairing/start` (with the deployment bootstrap secret supplied by
+the host) and joining an invited household through
+`POST /api/v1/family/invites/accept`. Account creation requires an explicit
+consent acknowledgement before the request is sent; all successful paths end
+in the same Keychain-backed `AuthSession`.
+
+After authentication, onboarding records four purpose choices (`audio_capture`,
+`video_capture`, `medication_management`, and `family_mode`) through the
+backend before allowing the caregiver/resident shell. Privacy and consent are
+grouped under Account/Settings, and logout revokes the session before clearing
+the Keychain and scoped onboarding marker. A caregiver can switch between
+multiple care recipients in the Family view; the current native presentation
+still uses local fixtures for those map/reminder rows.
 
 ## API endpoint configuration
 

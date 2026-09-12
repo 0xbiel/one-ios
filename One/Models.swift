@@ -6,6 +6,7 @@ enum UserRole: String, Codable, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
 }
+struct CareRecipient: Identifiable, Codable, Sendable, Equatable { let id: UUID; let name: String; let relationship: String }
 
 enum CaregiverAccessRole: String, Codable, CaseIterable, Identifiable, Sendable {
     case owner, primaryCaregiver, supporter, viewer

@@ -52,4 +52,21 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(store.role, .caregiver)
         XCTAssertNil(store.authError)
     }
+
+    func testMockOnboardingEntryPointsReturnSessionData() async throws {
+        let client = MockOneAPIClient()
+        let account = try await client.bootstrapAccount(BootstrapAccountRequest(displayName: "Test", email: nil, homeName: "Home", role: .caregiver), bootstrapSecret: nil)
+        XCTAssertEqual(account.role, "caregiver")
+        let joined = try await client.acceptFamilyInvite(FamilyInviteAcceptRequest(code: "123456", displayName: "Test"))
+        XCTAssertEqual(joined.role, .caregiver)
+    }
+
+    func testDemoModeSkipsPostAuthOnboarding() {
+        XCTAssertFalse(AppStore.demo.requiresOnboarding)
+    }
+
+    func testConsentRequestUsesBackendPurposeNames() async throws {
+        let client = MockOneAPIClient()
+        try await client.recordConsent(homeID: UUID(), request: ConsentRequest(purpose: "family_mode", policyVersion: "2026-09", granted: false))
+    }
 }

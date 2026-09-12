@@ -4,6 +4,7 @@ struct RootView: View {
     @Bindable var store: AppStore
     var body: some View {
         if !store.isAuthenticated { LoginView(store: store) }
+        else if store.requiresOnboarding { OnboardingView(store: store) }
         else if store.role == .caregiver { CaregiverShell(store: store) }
         else { ResidentShell(store: store) }
     }
@@ -13,17 +14,48 @@ struct LoginView: View {
     @Bindable var store: AppStore
     @State private var pairingCode = ""
     @State private var isSubmitting = false
+    @State private var mode = 0
+    @State private var name = ""
+    @State private var email = ""
+    @State private var homeName = ""
+    @State private var consent = false
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             Spacer()
             Text("ONE").font(.caption.weight(.bold)).tracking(2).foregroundStyle(OneTheme.accentBlue)
             Text("Sign in to your home.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.2).foregroundStyle(OneTheme.ink)
             Text("Enter the one-time pairing code from your ONE backend. Your session is stored securely on this device.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
-            TextField("Pairing code", text: $pairingCode).textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.roundedBorder).accessibilityLabel("Pairing code")
+            Picker("Account action", selection: $mode) { Text("Sign in").tag(0); Text("Create household").tag(1); Text("Join household").tag(2) }.pickerStyle(.segmented)
+            if mode == 1 {
+                TextField("Your name", text: $name).textFieldStyle(.roundedBorder)
+                TextField("Email (optional)", text: $email).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never)
+                TextField("Household name", text: $homeName).textFieldStyle(.roundedBorder)
+                Toggle("I consent to ONE storing household account data needed for this service.", isOn: $consent).tint(OneTheme.accentBlue).font(.footnote)
+            } else {
+                TextField(mode == 0 ? "Pairing code" : "Invitation code", text: $pairingCode).textInputAutocapitalization(.characters).autocorrectionDisabled().textFieldStyle(.roundedBorder).accessibilityLabel(mode == 0 ? "Pairing code" : "Invitation code")
+                if mode == 2 { TextField("Your name (optional)", text: $name).textFieldStyle(.roundedBorder) }
+            }
             if let authError = store.authError { Text(authError).font(.footnote).foregroundStyle(OneTheme.amber).accessibilityAddTraits(.isStaticText) }
-            Button { isSubmitting = true; Task { await store.login(pairingCode: pairingCode); isSubmitting = false } } label: { Label(isSubmitting ? "Signing in…" : "Sign in", systemImage: "arrow.right").frame(maxWidth: .infinity).padding(16) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).disabled(pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting).accessibilityHint("Uses a one-time backend pairing code")
+            Button { isSubmitting = true; Task { if mode == 0 { await store.login(pairingCode: pairingCode) } else if mode == 2 { await store.acceptFamilyInvite(code: pairingCode, displayName: name.isEmpty ? nil : name) } else if let code = await store.bootstrapAccount(BootstrapAccountRequest(displayName: name, email: email.isEmpty ? nil : email, homeName: homeName.isEmpty ? "ONE Home" : homeName, role: .caregiver)) { await store.login(pairingCode: code) }; isSubmitting = false } } label: { Label(isSubmitting ? "Working…" : (mode == 0 ? "Sign in" : mode == 1 ? "Create account" : "Join household"), systemImage: "arrow.right").frame(maxWidth: .infinity).padding(16) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).disabled(isSubmitting || (mode == 1 ? (name.isEmpty || !consent) : pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)).accessibilityHint("Account access is protected by a backend session")
             Spacer()
         }.padding(24).background(OneTheme.canvas.ignoresSafeArea()).task { await store.checkBackend() }
+    }
+}
+
+struct OnboardingView: View {
+    @Bindable var store: AppStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Spacer()
+            Text("ONE").font(.caption.weight(.bold)).tracking(2).foregroundStyle(OneTheme.accentBlue)
+            if store.onboardingStep == 0 { Text("Welcome to your home.").font(.largeTitle.weight(.bold)); Text("ONE helps your care circle notice daily rhythms with clarity and consent.").foregroundStyle(OneTheme.secondaryInk) }
+            else if store.onboardingStep == 1 { Text("Choose what ONE may use.").font(.largeTitle.weight(.bold)); Text("You can change these choices later in Account.").foregroundStyle(OneTheme.secondaryInk); ForEach(Array(store.onboardingConsents.keys.sorted()), id: \.self) { purpose in Toggle(purpose, isOn: Binding(get: { store.onboardingConsents[purpose] ?? false }, set: { store.onboardingConsents[purpose] = $0 })).tint(OneTheme.accentBlue) } }
+            else if store.onboardingStep == 2 { Text("Set up at your pace.").font(.largeTitle.weight(.bold)); Text("Camera pairing and inviting family are optional. You can do them later from the care circle.").foregroundStyle(OneTheme.secondaryInk); Label("No camera or family access is enabled automatically.", systemImage: "lock.shield").font(.footnote) }
+            else { Text("You’re ready.").font(.largeTitle.weight(.bold)); Text("Your choices are saved. ONE will keep observations understandable and non-diagnostic.").foregroundStyle(OneTheme.secondaryInk) }
+            if let authError = store.authError { Text(authError).font(.footnote).foregroundStyle(OneTheme.amber).accessibilityAddTraits(.isStaticText) }
+            Spacer()
+            Button { Task { let saved = store.onboardingStep == 1 ? await store.recordOnboardingConsents() : true; guard saved else { return }; if store.onboardingStep < 2 { store.onboardingStep += 1 } else { store.completeOnboarding() } } } label: { Text(store.onboardingStep < 2 ? "Continue" : "Finish setup").frame(maxWidth: .infinity).padding(16) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue)
+        }.padding(24).background(OneTheme.canvas.ignoresSafeArea()).accessibilityElement(children: .contain)
     }
 }
 
@@ -35,7 +67,7 @@ struct CaregiverShell: View {
             MapView(store: store).tabItem { Label("Map", systemImage: "map.fill") }.tag("map")
             FamilyView(store: store).tabItem { Label("Family", systemImage: "person.2.fill") }.tag("family")
             EventsView(store: store).tabItem { Label("Events", systemImage: "bell") }.tag("events")
-            SettingsView(store: store).tabItem { Label("Privacy", systemImage: "lock.shield") }.tag("settings")
+            SettingsView(store: store).tabItem { Label("Account", systemImage: "person.crop.circle") }.tag("settings")
         }.toolbarBackground(.visible, for: .tabBar).toolbarBackground(.regularMaterial, for: .tabBar)
     }
 }
@@ -46,7 +78,7 @@ struct ResidentShell: View {
         TabView(selection: $store.selectedTab) {
             ResidentHomeView(store: store).tabItem { Label("Today", systemImage: "sun.max.fill") }.tag("overview")
             AssistantView(store: store).tabItem { Label("Assistant", systemImage: "waveform") }.tag("assistant")
-            SettingsView(store: store).tabItem { Label("Privacy", systemImage: "lock.shield") }.tag("settings")
+            SettingsView(store: store).tabItem { Label("Account", systemImage: "person.crop.circle") }.tag("settings")
         }.toolbarBackground(.visible, for: .tabBar).toolbarBackground(.regularMaterial, for: .tabBar)
     }
 }
@@ -114,6 +146,11 @@ struct FamilyView: View {
                         Text("Family, in sync.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.4).foregroundStyle(OneTheme.ink)
                         Text("People, reminders, and permissions around the home.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
                     }
+                    Picker("Person or household", selection: $store.selectedSubjectName) {
+                        Text("Everyone").tag("Everyone")
+                        ForEach(store.careRecipients) { recipient in Text(recipient.name).tag(recipient.name) }
+                    }.pickerStyle(.menu).accessibilityLabel("Selected person or household").onChange(of: store.selectedSubjectName) { _, value in store.selectedSubjectID = store.careRecipients.first(where: { $0.name == value })?.id }
+                    Text("Showing plans and observations for \(store.selectedSubjectName). Switch people before reviewing sensitive details.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
                     peopleSection
                     medicationSection
                     caregiverAssistant
@@ -158,7 +195,7 @@ struct FamilyView: View {
     private var medicationSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .bottom) {
-                sectionHeading("TODAY'S PLAN", "Shared medication reminders")
+                sectionHeading("TODAY'S PLAN", "Medication reminders · " + store.selectedSubjectName)
                 Spacer()
                 Button { store.addReminder() } label: {
                     Label("Add", systemImage: "plus").font(.subheadline.weight(.semibold))
@@ -284,11 +321,11 @@ struct MedicationDoseRow: View {
     }
 }
 
-struct EventsView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { ScrollView { LazyVStack(alignment: .leading, spacing: 14) { Text("Events").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1); Text("A reviewable record of observed moments.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk); ForEach(store.events) { event in NavigationLink { EventDetailView(event: event) } label: { EventRow(event: event) }.buttonStyle(.plain) } }.padding(20) }.background(OneTheme.canvas.ignoresSafeArea()).safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }.toolbar(.hidden, for: .navigationBar) } } }
+struct EventsView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { ScrollView { LazyVStack(alignment: .leading, spacing: 14) { Text("Events · \(store.selectedSubjectName)").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1); Text("A reviewable record of observed moments.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk); ForEach(store.events) { event in NavigationLink { EventDetailView(event: event) } label: { EventRow(event: event) }.buttonStyle(.plain) } }.padding(20) }.background(OneTheme.canvas.ignoresSafeArea()).safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }.toolbar(.hidden, for: .navigationBar) } } }
 struct EventRow: View { let event: ObservedEvent; var body: some View { HStack(spacing: 14) { Image(systemName: event.kind.symbol).font(.title3).foregroundStyle(OneTheme.accentBlue).frame(width: 40, height: 40).background(OneTheme.accentBlue.opacity(0.10), in: Circle()); VStack(alignment: .leading, spacing: 4) { Text(event.kind.title).font(.headline); Text(event.explanation).font(.subheadline).foregroundStyle(OneTheme.secondaryInk); Text("\(event.location) · \(event.timestamp.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.tertiary) }; Spacer(); ConfidenceBadge(confidence: event.confidence) }.padding(.vertical, 10).accessibilityElement(children: .combine).accessibilityLabel("\(event.kind.title), \(event.location), \(event.confidence.title) confidence") } }
 struct EventDetailView: View { let event: ObservedEvent; var body: some View { ScrollView { VStack(alignment: .leading, spacing: 18) { Text(event.kind.title).font(.largeTitle.weight(.bold)); EventRow(event: event); if event.hasClip { SurfaceCard { Label("Local clip ready for review", systemImage: "play.circle.fill").font(.headline).padding(20) } }; Text("This is an observational signal for human review, not a diagnosis.").font(.footnote).foregroundStyle(OneTheme.amber) }.padding(20) }.background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Review").navigationBarTitleDisplayMode(.inline) } }
 
 struct ScanView: View { @Bindable var store: AppStore; @Environment(\.dismiss) private var dismiss; @State private var isCapturing = false; @State private var showCapture = false; var body: some View { ZStack { if showCapture && RoomPlanCapability.isSupported { RoomPlanCaptureView(isCapturing: $isCapturing) { _ in isCapturing = false; showCapture = false; dismiss() }.ignoresSafeArea() } else { VStack(alignment: .leading, spacing: 18) { Text("Refresh the home map").font(.system(size: 36, weight: .bold, design: .rounded)).tracking(-1); if RoomPlanCapability.isSupported { Text("Walk slowly around the room. The scan stays on this device until you choose to share it.").foregroundStyle(OneTheme.secondaryInk); Button { showCapture = true; isCapturing = true } label: { Label("Start LiDAR scan", systemImage: "viewfinder") }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).foregroundStyle(.white) } else { Label("LiDAR is not available on this device.", systemImage: "iphone.slash").font(.headline); Text("You can still use ONE with a simple caregiver-created zone map.").foregroundStyle(OneTheme.secondaryInk); Button("Create zones manually") { dismiss() }.buttonStyle(.bordered) }; Spacer() }.padding(24) } }.background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Room scan").navigationBarTitleDisplayMode(.inline) } }
 struct ResidentHomeView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { VStack(alignment: .leading, spacing: 24) { Text("Today").font(.system(size: 42, weight: .bold, design: .rounded)).tracking(-1.2); Text("A little support for a more independent day.").font(.title3).foregroundStyle(OneTheme.secondaryInk); Spacer(); Button { store.selectedTab = "assistant" } label: { Label("Start check-in", systemImage: "waveform").font(.headline).frame(maxWidth: .infinity).padding(18) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue); Spacer() }.padding(20).background(OneTheme.canvas.ignoresSafeArea()).toolbar(.hidden, for: .navigationBar) } } }
 struct AssistantView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { VStack { ScrollView { LazyVStack(alignment: .leading, spacing: 12) { Text("Assistant").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1); ForEach(store.assistantMessages) { message in HStack { if message.isUser { Spacer() }; Text(message.text).foregroundStyle(OneTheme.ink).padding(14).background(message.isUser ? OneTheme.accentCyan.opacity(0.25) : OneTheme.surface, in: RoundedRectangle(cornerRadius: 20)); if !message.isUser { Spacer() } } } }.padding(20) }; Button { store.isListening.toggle(); if !store.isListening { store.sendAssistantMessage() } } label: { Label(store.isListening ? "Release to send" : "Press and hold to talk", systemImage: store.isListening ? "waveform.circle.fill" : "mic.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(18) }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).foregroundStyle(.white).padding(20) }.background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Assistant").navigationBarTitleDisplayMode(.inline) } } }
-struct SettingsView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { Form { Section("Privacy and consent") { ForEach(store.consents) { consent in Toggle(consent.purpose, isOn: Binding(get: { consent.enabled }, set: { _ in store.toggleConsent(consent) })).tint(OneTheme.accentBlue) }; Text("Sensitive room, audio, and clip data stays local unless you explicitly enable sharing.").font(.footnote) }; Section("Your data") { Button { store.lastDataRequest = DataRequest(kind: .export) } label: { Label("Prepare a data export", systemImage: "square.and.arrow.up") }; Button(role: .destructive) { store.lastDataRequest = DataRequest(kind: .delete) } label: { Label("Request deletion", systemImage: "trash") } }; Section("Session") { Button(role: .destructive) { Task { await store.logout() } } label: { Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right") }; Text("Signing out revokes the backend session and clears this device’s stored credential.").font(.footnote) }; Section("About") { Label("ONE · build 1", systemImage: "sparkles"); Text("Observations support human attention. They are not medical advice or a diagnosis.").font(.footnote).foregroundStyle(.secondary) } }.scrollContentBackground(.hidden).background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Privacy") } } }
+struct SettingsView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { Form { Section("Privacy and consent") { ForEach(store.consents) { consent in Toggle(consent.purpose, isOn: Binding(get: { consent.enabled }, set: { _ in store.toggleConsent(consent) })).tint(OneTheme.accentBlue) }; Text("Sensitive room, audio, and clip data stays local unless you explicitly enable sharing.").font(.footnote) }; Section("Your data") { Button { store.lastDataRequest = DataRequest(kind: .export) } label: { Label("Prepare a data export", systemImage: "square.and.arrow.up") }; Button(role: .destructive) { store.lastDataRequest = DataRequest(kind: .delete) } label: { Label("Request deletion", systemImage: "trash") } }; Section("Session") { Button(role: .destructive) { Task { await store.logout() } } label: { Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right") }; Text("Signing out revokes the backend session and clears this device’s stored credential.").font(.footnote) }; Section("About") { Label("ONE · build 1", systemImage: "sparkles"); Text("Observations support human attention. They are not medical advice or a diagnosis.").font(.footnote).foregroundStyle(.secondary) } }.scrollContentBackground(.hidden).background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Account") } } }

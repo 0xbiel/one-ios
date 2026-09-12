@@ -1,2 +1,4 @@
 .DS_Store
 DerivedData/
+One.xcodeproj/xcuserdata/
+*.xcuserstate

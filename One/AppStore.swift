@@ -5,6 +5,7 @@ import Observation
 @Observable
 final class AppStore {
     static let sessionKey = "one.auth.session"
+    static func onboardingKey(homeID: UUID, userID: UUID) -> String { "one.auth.onboarding.\(homeID.uuidString).\(userID.uuidString)" }
     var role: UserRole = .caregiver
     var selectedTab = "overview"
     var events: [ObservedEvent]
@@ -21,12 +22,18 @@ final class AppStore {
     var apiClient: any OneAPIClient
     var session: AuthSession?
     var authError: String?
+    var onboardingStep = 0
+    var onboardingConsents: [String: Bool] = ["Daily check-in support": false, "Room and camera data": false, "Medication reminders": false, "Family sharing": false]
+    var selectedSubjectName = "Everyone"
+    var selectedSubjectID: UUID?
+    var careRecipients: [CareRecipient] = []
     private let sessionStore: any SessionKeyStore
     let runtimeConfiguration = RuntimeConfiguration()
 
     init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], medicationDoses: [MedicationDose] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore()) {
         self.events = events; self.scan = scan; self.consents = consents
         self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore
+        self.careRecipients = caregivers.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
     }
 
     static func configured() -> AppStore {
@@ -106,20 +113,58 @@ final class AppStore {
     }
 
     var isAuthenticated: Bool { runtimeConfiguration.isDemoMode || session != nil }
+    var requiresOnboarding: Bool { guard !runtimeConfiguration.isDemoMode, let session else { return false }; return (try? sessionStore.load(Self.onboardingKey(homeID: session.homeID, userID: session.userID))) == nil }
 
     func login(pairingCode: String) async {
         authError = nil
         do {
             let authenticated = try await apiClient.completePairing(code: pairingCode.trimmingCharacters(in: .whitespacesAndNewlines))
             try sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
-            session = authenticated; role = authenticated.role
-            apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration, accessToken: authenticated.accessToken, homeID: authenticated.homeID)
-            backendState = .connected
+            applySession(authenticated)
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
 
+    func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String? = nil) async -> String? {
+        authError = nil
+        do {
+            let response = try await apiClient.bootstrapAccount(request, bootstrapSecret: bootstrapSecret)
+            if let token = response.accessToken, let homeID = response.homeID, let userID = response.userID {
+                applySession(AuthSession(accessToken: token, homeID: homeID, userID: userID, role: request.role, expiresAt: response.expiresAt))
+            }
+            return response.pairingCode
+        } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not create the household."; return nil }
+    }
+
+    func acceptFamilyInvite(code: String, displayName: String?) async {
+        authError = nil
+        do { applySession(try await apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(code: code, displayName: displayName))) }
+        catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not join the household." }
+    }
+
+    private func applySession(_ authenticated: AuthSession) {
+        try? sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
+        session = authenticated; role = authenticated.role
+        onboardingStep = 0
+        apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration, accessToken: authenticated.accessToken, homeID: authenticated.homeID)
+        backendState = .connected
+    }
+
+    func completeOnboarding() { guard let session else { return }; try? sessionStore.save(Data("complete".utf8), for: Self.onboardingKey(homeID: session.homeID, userID: session.userID)); onboardingStep = 3 }
+
+    func recordOnboardingConsents() async -> Bool {
+        guard !runtimeConfiguration.isDemoMode, let session else { return true }
+        authError = nil
+        let mapping = ["Daily check-in support": "audio_capture", "Room and camera data": "video_capture", "Medication reminders": "medication_management", "Family sharing": "family_mode"]
+        for (label, purpose) in mapping {
+            do { try await apiClient.recordConsent(homeID: session.homeID, request: ConsentRequest(purpose: purpose, policyVersion: "2026-09", granted: onboardingConsents[label] ?? false)) }
+            catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not save consent choices."; return false }
+        }
+        return true
+    }
+
     func logout() async {
-        defer { try? sessionStore.delete(Self.sessionKey); session = nil; authError = nil; apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration); backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable }
+        let onboardingCredential = session.map { Self.onboardingKey(homeID: $0.homeID, userID: $0.userID) }
+        defer { try? sessionStore.delete(Self.sessionKey); if let onboardingCredential { try? sessionStore.delete(onboardingCredential) }; session = nil; authError = nil; apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration); backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable }
         guard session != nil else { return }
         do { try await apiClient.logout() } catch { /* Local credentials are cleared even if the network is unavailable. */ }
     }

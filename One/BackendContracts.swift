@@ -28,9 +28,10 @@ struct PairingChallengeResponse: Codable, Sendable {
     let homeID: UUID?
     let userID: UUID?
     let role: String?
+    let pairingCode: String?
 
-    init(pairingID: UUID, expiresAt: Date, accessToken: String? = nil, homeID: UUID? = nil, userID: UUID? = nil, role: String? = nil) {
-        self.pairingID = pairingID; self.expiresAt = expiresAt; self.accessToken = accessToken; self.homeID = homeID; self.userID = userID; self.role = role
+    init(pairingID: UUID, expiresAt: Date, accessToken: String? = nil, homeID: UUID? = nil, userID: UUID? = nil, role: String? = nil, pairingCode: String? = nil) {
+        self.pairingID = pairingID; self.expiresAt = expiresAt; self.accessToken = accessToken; self.homeID = homeID; self.userID = userID; self.role = role; self.pairingCode = pairingCode
     }
 }
 struct AuthSession: Codable, Sendable, Equatable {
@@ -40,6 +41,9 @@ struct AuthSession: Codable, Sendable, Equatable {
     let role: UserRole
     let expiresAt: Date?
 }
+struct BootstrapAccountRequest: Codable, Sendable { let displayName: String; let email: String?; let homeName: String; let role: UserRole }
+struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String? }
+struct ConsentRequest: Codable, Sendable { let purpose: String; let policyVersion: String; let granted: Bool }
 struct LiveKitTokenResponse: Codable, Sendable { let websocketURL: URL; let token: String; let roomName: String; let expiresAt: Date }
 struct ArtifactUploadResponse: Codable, Sendable { let artifactID: UUID; let sha256: String; let expiresAt: Date? }
 struct DataRequestResponse: Codable, Sendable { let requestID: UUID; let status: String }
@@ -71,6 +75,9 @@ protocol OneAPIClient: Sendable {
     func health() async throws -> BackendHealthResponse
     func createPairingChallenge(_ request: PairingChallengeRequest) async throws -> PairingChallengeResponse
     func completePairing(code: String) async throws -> AuthSession
+    func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse
+    func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession
+    func recordConsent(homeID: UUID, request: ConsentRequest) async throws
     func logout() async throws
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse
@@ -82,6 +89,9 @@ struct MockOneAPIClient: OneAPIClient {
     func health() async throws -> BackendHealthResponse { BackendHealthResponse(status: "ok", database: "demo", localInferenceModel: "qwen3.6-35b-a3b") }
     func createPairingChallenge(_ request: PairingChallengeRequest) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(300)) }
     func completePairing(code: String) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
+    func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(600), accessToken: "demo", homeID: UUID(), userID: UUID(), role: request.role.rawValue) }
+    func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
+    func recordConsent(homeID: UUID, request: ConsentRequest) async throws { }
     func logout() async throws { }
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse { LiveKitTokenResponse(websocketURL: URL(string: "wss://lan.invalid")!, token: "demo-token", roomName: "one-demo", expiresAt: Date().addingTimeInterval(300)) }
@@ -131,11 +141,29 @@ struct HTTPOneAPIClient: OneAPIClient {
         return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: role, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 
+    func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String? = nil) async throws -> PairingChallengeResponse {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendBootstrapResponse = try await send(path: "/pairing/start", method: "POST", body: body, requiresSession: false, headers: bootstrapSecret.map { ["X-Bootstrap-Secret": $0] } ?? [:])
+        return PairingChallengeResponse(pairingID: UUID(uuidString: response.userID) ?? UUID(), expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresInSeconds)), homeID: UUID(uuidString: response.homeID), userID: UUID(uuidString: response.userID), role: response.role ?? request.role.rawValue, pairingCode: response.pairingCode)
+    }
+
+    func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendPairingResponse = try await send(path: "/family/invites/accept", method: "POST", body: body, requiresSession: false)
+        guard let homeID = UUID(uuidString: response.homeID), let userID = UUID(uuidString: response.userID) else { throw OneAPIError.invalidResponse }
+        return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: response.role == "resident" ? .resident : .caregiver, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
+    }
+
+    func recordConsent(homeID: UUID, request: ConsentRequest) async throws {
+        let body = try JSONEncoder.one.encode(request)
+        let _: BackendConsentResponse = try await send(path: "/homes/\(homeID.uuidString)/consents", method: "POST", body: body, requiresSession: true)
+    }
+
     func logout() async throws { try await sendEmpty(path: "/sessions/current", method: "DELETE") }
 
     private func currentRole() async throws -> UserRole {
         let response: BackendMeResponse = try await send(path: "/me", method: "GET", body: nil, requiresSession: true)
-        return UserRole(rawValue: response.actor.role) ?? .caregiver
+        return response.actor.role == "resident" ? .resident : .caregiver // backend admin/caregiver accounts use the caregiver shell
     }
 
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse {
@@ -169,11 +197,12 @@ struct HTTPOneAPIClient: OneAPIClient {
         return DataRequestResponse(requestID: UUID(uuidString: response.requestID) ?? UUID(), status: response.status)
     }
 
-    private func send<T: Decodable>(path: String, method: String, body: Data?, requiresSession: Bool) async throws -> T {
+    private func send<T: Decodable>(path: String, method: String, body: Data?, requiresSession: Bool, headers: [String: String] = [:]) async throws -> T {
         if requiresSession && (accessToken == nil || homeID == nil) { throw OneAPIError.missingSession }
         var request = URLRequest(url: baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))))
         request.httpMethod = method; request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         if let accessToken { request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization") }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw OneAPIError.invalidResponse }
@@ -196,8 +225,10 @@ struct HTTPOneAPIClient: OneAPIClient {
 }
 
 private struct BackendPairingResponse: Decodable { let accessToken: String; let expiresIn: Int; let homeID: String; let userID: String; let role: String? }
+private struct BackendBootstrapResponse: Decodable { let pairingCode: String; let expiresInSeconds: Int; let homeID: String; let userID: String; let role: String? }
 private struct BackendMeResponse: Decodable { let actor: BackendActor }
 private struct BackendActor: Decodable { let role: String }
+private struct BackendConsentResponse: Decodable { let id: String? }
 private struct BackendIDResponse: Decodable { let id: String }
 private struct BackendLiveKitResponse: Decodable { let url: String; let token: String; let expiresIn: Int }
 private struct BackendExportResponse: Decodable { let homeID: String }
