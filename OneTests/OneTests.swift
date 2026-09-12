@@ -57,7 +57,7 @@ final class OneTests: XCTestCase {
         let client = MockOneAPIClient()
         let account = try await client.bootstrapAccount(BootstrapAccountRequest(displayName: "Test", email: nil, homeName: "Home", role: .caregiver), bootstrapSecret: nil)
         XCTAssertEqual(account.role, "caregiver")
-        let joined = try await client.acceptFamilyInvite(FamilyInviteAcceptRequest(code: "123456", displayName: "Test"))
+        let joined = try await client.acceptFamilyInvite(FamilyInviteAcceptRequest(code: "123456", displayName: "Test", email: nil))
         XCTAssertEqual(joined.role, .caregiver)
     }
 
