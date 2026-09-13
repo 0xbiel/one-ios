@@ -55,6 +55,10 @@ final class AppStore {
     var careRecipients: [CareRecipient] = []
     var pairedCameras: [PairedCamera] = []
     var cameraCount = 0
+    var cameraPairingChallenge: CameraPairingChallenge?
+    var cameraPairingStatus: CameraPairingStatus?
+    var isCameraPairingBusy = false
+    var cameraPairingError: String?
     private var pendingRoomPlanMapID: UUID?
     private var pendingRoomPlanUSDZData: Data?
     private var roomPlanModelMapID: UUID?
@@ -250,11 +254,11 @@ final class AppStore {
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
 
-    func requestEmailCode(email: String, purpose: String, displayName: String? = nil, homeName: String = "ONE Home") async -> String? {
+    func requestEmailCode(email: String, purpose: String, displayName: String? = nil, homeName: String = "ONE Home", careSetting: String = "home", supportFocus: String = "general") async -> String? {
         authError = nil
         emailChallenge = nil
         do {
-            emailChallenge = try await apiClient.requestEmailCode(EmailAuthRequest(email: email.trimmingCharacters(in: .whitespacesAndNewlines), purpose: purpose, displayName: displayName, homeName: homeName, role: .caregiver))
+            emailChallenge = try await apiClient.requestEmailCode(EmailAuthRequest(email: email.trimmingCharacters(in: .whitespacesAndNewlines), purpose: purpose, displayName: displayName, homeName: homeName, careSetting: careSetting, supportFocus: supportFocus, role: .caregiver))
             return emailChallenge?.devCode ?? "requested"
         } catch {
             if let apiError = error as? OneAPIError, case let .server(status: 404, message) = apiError {
@@ -322,6 +326,46 @@ final class AppStore {
         await refreshFamilyData()
     }
 
+    func startCameraPairing(label: String = "ONE room camera") async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        guard role != .resident else {
+            cameraPairingError = "Only a caregiver can pair a room camera."
+            return
+        }
+        isCameraPairingBusy = true
+        cameraPairingError = nil
+        cameraPairingStatus = nil
+        defer { isCameraPairingBusy = false }
+        do {
+            cameraPairingChallenge = try await apiClient.startCameraPairing(homeID: session.homeID, label: label)
+        } catch {
+            cameraPairingChallenge = nil
+            cameraPairingError = (error as? LocalizedError)?.errorDescription ?? "Could not start camera pairing."
+        }
+    }
+
+    func refreshCameraPairingStatus() async {
+        guard !runtimeConfiguration.isDemoMode, let session, let challenge = cameraPairingChallenge else { return }
+        do {
+            let status = try await apiClient.cameraPairingStatus(homeID: session.homeID, pairingID: challenge.pairingID)
+            cameraPairingStatus = status
+            cameraPairingError = nil
+            if status.status == "connected" {
+                pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+                cameraCount = pairedCameras.count
+            }
+        } catch {
+            cameraPairingError = (error as? LocalizedError)?.errorDescription ?? "Could not refresh camera status."
+        }
+    }
+
+    func clearCameraPairing() {
+        cameraPairingChallenge = nil
+        cameraPairingStatus = nil
+        cameraPairingError = nil
+        isCameraPairingBusy = false
+    }
+
     func refreshScene() async {
         guard !runtimeConfiguration.isDemoMode, let session else { return }
         do {
@@ -351,6 +395,7 @@ final class AppStore {
         roomPlanModelError = nil
         var uploadedMapID: UUID?
         var artifactData: Data?
+        var visualLandmarkWarning: String?
         defer { isRoomPlanUploading = false }
 
         do {
@@ -360,6 +405,34 @@ final class AppStore {
             uploadedMapID = map.mapID
             pendingRoomPlanMapID = map.mapID
             pendingRoomPlanUSDZData = artifact.usdzData
+
+            if capture.visualSamples.count >= 2 {
+                do {
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    let frames = capture.visualSamples.map { sample in
+                        RoomPlanVisualLandmarkFrameRequest(
+                            frameBase64: sample.jpegData.base64EncodedString(),
+                            width: sample.width,
+                            height: sample.height,
+                            depthBase64: sample.depthData.base64EncodedString(),
+                            depthWidth: sample.depthWidth,
+                            depthHeight: sample.depthHeight,
+                            intrinsics: Matrix3x3Request(values: sample.intrinsics),
+                            cameraToWorld: sample.cameraToWorld,
+                            capturedAt: formatter.string(from: sample.capturedAt)
+                        )
+                    }
+                    let visualIndex = try await apiClient.uploadRoomPlanVisualLandmarks(mapID: map.mapID, frames: frames)
+                    if visualIndex.status != "ready" {
+                        visualLandmarkWarning = "The 3D map is saved, but there were not enough visual landmarks to position a separate camera automatically. Scan the room again with more texture and furniture in view."
+                    }
+                } catch {
+                    visualLandmarkWarning = "The 3D map is saved, but its visual landmark index could not be built. Separate cameras will need a fresh RoomPlan scan before automatic positioning."
+                }
+            } else {
+                visualLandmarkWarning = "The 3D map is saved, but too few RGB + LiDAR samples were captured for automatic positioning of a separate camera."
+            }
 
             if let cameraID {
                 do {
@@ -391,7 +464,7 @@ final class AppStore {
             if scene.cameraRegistration?.status == .needsRescan {
                 roomPlanModelError = "The 3D room map is saved. Keep this device still in the camera's final position and run one more setup scan to position it."
             } else if scene.isRenderable3D {
-                roomPlanModelError = nil
+                roomPlanModelError = visualLandmarkWarning
             } else if !scene.isRenderable3D {
                 roomPlanModelError = "The uploaded scan is not ready to display yet."
             }
@@ -603,6 +676,7 @@ final class AppStore {
             medicationPlans = []
             pairedCameras = []
             cameraCount = 0
+            clearCameraPairing()
             assistantMessages = []
         }
         session = authenticated; role = authenticated.role
@@ -710,6 +784,7 @@ final class AppStore {
                 medicationPlans = []
                 pairedCameras = []
                 cameraCount = 0
+                clearCameraPairing()
                 assistantMessages = []
             }
         }

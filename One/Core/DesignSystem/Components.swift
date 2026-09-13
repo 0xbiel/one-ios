@@ -50,6 +50,24 @@ struct LiquidGlassControl<Content: View>: View {
     }
 }
 
+struct LiquidGlassSurface<Content: View>: View {
+    let radius: CGFloat
+    let content: Content
+
+    init(radius: CGFloat = 16, @ViewBuilder content: () -> Content) {
+        self.radius = radius
+        self.content = content()
+    }
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: .rect(cornerRadius: radius))
+        } else {
+            content.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        }
+    }
+}
+
 struct OnePrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

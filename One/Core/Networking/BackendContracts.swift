@@ -21,7 +21,25 @@ struct CanonicalAPIError: Codable, Sendable {
 }
 
 struct PairingChallengeRequest: Codable, Sendable { let code: String }
-struct EmailAuthRequest: Codable, Sendable { let email: String; let purpose: String; let displayName: String?; let homeName: String; let role: UserRole }
+struct EmailAuthRequest: Codable, Sendable {
+    let email: String
+    let purpose: String
+    let displayName: String?
+    let homeName: String
+    let careSetting: String
+    let supportFocus: String
+    let role: UserRole
+
+    init(email: String, purpose: String, displayName: String?, homeName: String, careSetting: String = "home", supportFocus: String = "general", role: UserRole) {
+        self.email = email
+        self.purpose = purpose
+        self.displayName = displayName
+        self.homeName = homeName
+        self.careSetting = careSetting
+        self.supportFocus = supportFocus
+        self.role = role
+    }
+}
 struct EmailAuthVerifyRequest: Codable, Sendable { let email: String; let code: String }
 struct EmailAuthChallenge: Codable, Sendable {
     let verificationID: UUID
@@ -65,7 +83,43 @@ struct AuthSession: Codable, Sendable, Equatable {
     let role: UserRole
     let expiresAt: Date?
 }
-struct BootstrapAccountRequest: Codable, Sendable { let displayName: String; let email: String?; let homeName: String; let role: UserRole }
+struct BootstrapAccountRequest: Codable, Sendable {
+    let displayName: String
+    let email: String?
+    let homeName: String
+    let careSetting: String
+    let supportFocus: String
+    let role: UserRole
+
+    init(displayName: String, email: String?, homeName: String, careSetting: String = "home", supportFocus: String = "general", role: UserRole) {
+        self.displayName = displayName
+        self.email = email
+        self.homeName = homeName
+        self.careSetting = careSetting
+        self.supportFocus = supportFocus
+        self.role = role
+    }
+}
+
+struct CameraPairingChallenge: Codable, Sendable, Equatable {
+    let pairingID: UUID
+    let pairingCode: String
+    let expiresInSeconds: Int
+}
+
+struct CameraPairingStatus: Codable, Sendable, Equatable {
+    struct Device: Codable, Sendable, Equatable {
+        let id: UUID
+        let label: String
+        let role: String
+    }
+
+    let pairingID: UUID
+    let status: String
+    let expiresAt: String
+    let connectedAt: String?
+    let device: Device
+}
 struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String?; let email: String? }
 struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
 struct FamilyMemberUpdateRequest: Codable, Sendable, Equatable { let role: UserRole }
@@ -189,6 +243,36 @@ struct RoomPlanCameraRegistrationResponse: Codable, Sendable, Equatable {
     let trackingState: String
     let source: String
 }
+struct Matrix3x3Request: Codable, Sendable, Equatable {
+    let values: [[Double]]
+}
+struct RoomPlanVisualLandmarkFrameRequest: Codable, Sendable, Equatable {
+    let frameBase64: String
+    let width: Int
+    let height: Int
+    let depthBase64: String
+    let depthWidth: Int
+    let depthHeight: Int
+    let intrinsics: Matrix3x3Request
+    let cameraToWorld: [[Double]]
+    let capturedAt: String
+}
+struct RoomPlanVisualLandmarksRequest: Codable, Sendable, Equatable {
+    let frames: [RoomPlanVisualLandmarkFrameRequest]
+}
+struct RoomPlanVisualLandmarksResponse: Codable, Sendable, Equatable {
+    let mapID: UUID
+    let status: String
+    let landmarkCount: Int
+    let detector: String
+
+    private enum CodingKeys: String, CodingKey {
+        case mapID = "map_id"
+        case status
+        case landmarkCount = "landmark_count"
+        case detector
+    }
+}
 struct DataRequestResponse: Codable, Sendable { let requestID: UUID; let status: String }
 struct BackendHealthResponse: Codable, Sendable { let status: String; let database: String?; let localInferenceModel: String? }
 
@@ -234,6 +318,8 @@ protocol OneAPIClient: Sendable {
     func roomObjects(homeID: UUID) async throws -> [RoomObject]
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera]
     func cameraCount(homeID: UUID) async throws -> Int
+    func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge
+    func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult
@@ -247,6 +333,7 @@ protocol OneAPIClient: Sendable {
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse
+    func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse
     func registerRoomPlanCamera(homeID: UUID, request: RoomPlanCameraRegistrationRequest) async throws -> RoomPlanCameraRegistrationResponse
     func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data
     func refreshScene(homeID: UUID) async throws -> SceneDescriptor
@@ -267,6 +354,8 @@ struct MockOneAPIClient: OneAPIClient {
     func roomObjects(homeID: UUID) async throws -> [RoomObject] { [] }
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera] { [] }
     func cameraCount(homeID: UUID) async throws -> Int { 0 }
+    func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge { CameraPairingChallenge(pairingID: UUID(), pairingCode: "482701", expiresInSeconds: 600) }
+    func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus { CameraPairingStatus(pairingID: pairingID, status: "connected", expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)), connectedAt: ISO8601DateFormatter().string(from: Date()), device: .init(id: pairingID, label: "Demo camera", role: "publisher")) }
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String { "123456" }
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult {
@@ -285,6 +374,7 @@ struct MockOneAPIClient: OneAPIClient {
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID()) }
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse { USDZUploadResponse(mapID: mapID, usdz: USDZAsset(available: true, sha256: "local-demo", bytes: data.count, contentType: "model/vnd.usdz+zip", downloadPath: nil)) }
+    func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse { RoomPlanVisualLandmarksResponse(mapID: mapID, status: "ready", landmarkCount: 128, detector: "opencv-orb") }
     func registerRoomPlanCamera(homeID: UUID, request: RoomPlanCameraRegistrationRequest) async throws -> RoomPlanCameraRegistrationResponse { RoomPlanCameraRegistrationResponse(id: UUID(), status: .positioned, cameraID: request.cameraID, mapID: request.mapID, coordinateFrame: "roomplan-local", cameraToWorld: request.cameraToWorld, confidence: request.confidence, trackingState: request.trackingState, source: "auto-roomplan-registration") }
     func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data { Data() }
     func refreshScene(homeID: UUID) async throws -> SceneDescriptor { .empty }
@@ -383,6 +473,17 @@ struct HTTPOneAPIClient: OneAPIClient {
         try await pairedCameras(homeID: homeID).count
     }
 
+    func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge {
+        struct Response: Decodable { let pairingID: UUID; let pairingCode: String; let expiresInSeconds: Int }
+        let body = try JSONSerialization.data(withJSONObject: ["label": label, "expires_in_seconds": 600])
+        let response: Response = try await send(path: "/homes/\(homeID.oneAPIPath)/pairing/start", method: "POST", body: body, requiresSession: true)
+        return CameraPairingChallenge(pairingID: response.pairingID, pairingCode: response.pairingCode, expiresInSeconds: response.expiresInSeconds)
+    }
+
+    func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus {
+        try await send(path: "/homes/\(homeID.oneAPIPath)/pairing/\(pairingID.oneAPIPath)/status", method: "GET", body: nil, requiresSession: true)
+    }
+
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] {
         let response: BackendFamilyMembersResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/family/members", method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.account }
@@ -474,6 +575,12 @@ struct HTTPOneAPIClient: OneAPIClient {
         let response: BackendUSDZUploadResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/maps/\(mapID.oneAPIPath)/usdz", method: "PUT", body: data, requiresSession: true, headers: ["Content-Type": "model/vnd.usdz+zip", "X-ONE-Client": "native-ios-roomplan", "X-ONE-Idempotency-Key": mapID.oneAPIPath])
         guard let responseMapID = UUID(uuidString: response.mapId) else { throw OneAPIError.invalidResponse }
         return USDZUploadResponse(mapID: responseMapID, source: MapSource(rawValue: response.source) ?? .legacy2D, dimension: MapDimension(rawValue: response.dimension) ?? .twoD, usdz: response.usdz)
+    }
+
+    func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse {
+        guard let homeID else { throw OneAPIError.missingSession }
+        let body = try JSONEncoder.one.encode(RoomPlanVisualLandmarksRequest(frames: frames))
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/maps/\(mapID.oneAPIPath)/visual-landmarks", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
     }
 
     func registerRoomPlanCamera(homeID: UUID, request: RoomPlanCameraRegistrationRequest) async throws -> RoomPlanCameraRegistrationResponse {

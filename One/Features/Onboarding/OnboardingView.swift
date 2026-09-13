@@ -13,7 +13,7 @@ struct OnboardingView: View {
         OneOnboardingPage(
             eyebrow: "A clear view, with consent",
             title: "Support a calmer daily check-in.",
-            body: "Use room and camera context to help the care circle notice familiar routines.",
+            body: "Use room and camera context in a private home or residence to help the care circle notice familiar routines and compare with the person’s own baseline.",
             purpose: "Room and camera data",
             symbol: "camera.viewfinder",
             tint: OneTheme.accentCyan
@@ -21,7 +21,7 @@ struct OnboardingView: View {
         OneOnboardingPage(
             eyebrow: "Natural conversations",
             title: "Make answers feel easy.",
-            body: "Use the microphone for a gentle conversation when someone chooses to press and hold to talk.",
+            body: "Use the microphone for a gentle conversation when someone chooses to press and hold to talk, including daily MCI support without turning observations into a diagnosis.",
             purpose: "Daily check-in support",
             symbol: "waveform",
             tint: OneTheme.accentBlue
@@ -29,7 +29,7 @@ struct OnboardingView: View {
         OneOnboardingPage(
             eyebrow: "Share care, intentionally",
             title: "Keep trusted people close.",
-            body: "Share selected context with the people you choose, with clear household roles.",
+            body: "Share selected context with trusted family, caregivers, or residence staff, with clear roles and purpose-specific access.",
             purpose: "Family sharing",
             symbol: "person.2.fill",
             tint: OneTheme.mint
@@ -101,15 +101,19 @@ struct OnboardingView: View {
                                 .padding(.top, 16)
                                 .accessibilityAddTraits(.isStaticText)
                         }
-
-                        onboardingFooter
-                            .padding(.top, 16)
                     }
                     .frame(width: contentWidth, alignment: .leading)
                     .frame(maxWidth: .infinity)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 18)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: pageIndex)
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                onboardingFooter
+                    .frame(width: contentWidth)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
             }
         }
         .background(OneBackground())
@@ -139,32 +143,33 @@ struct OnboardingView: View {
     }
 
     private var consentChoice: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Choose for this home")
-                .font(.headline)
-                .foregroundStyle(OneTheme.ink)
+        LiquidGlassSurface(radius: 22) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Choose for this home")
+                    .font(.headline)
+                    .foregroundStyle(OneTheme.ink)
 
-            Text("This choice only controls this purpose. Nothing starts until you choose.")
-                .font(.caption)
-                .foregroundStyle(OneTheme.secondaryInk)
-                .fixedSize(horizontal: false, vertical: true)
+                Text("This choice only controls this purpose. Nothing starts until you choose.")
+                    .font(.caption)
+                    .foregroundStyle(OneTheme.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            choiceButton(
-                granted: true,
-                title: "Allow",
-                body: "Enable this purpose for your care circle."
-            )
-            choiceButton(
-                granted: false,
-                title: "Not now",
-                body: "Keep this data source off for now."
-            )
+                choiceButton(
+                    granted: true,
+                    title: "Allow",
+                    body: "Enable this purpose for your care circle."
+                )
+                choiceButton(
+                    granted: false,
+                    title: "Not now",
+                    body: "Keep this data source off for now."
+                )
+            }
+            .padding(16)
         }
-        .padding(16)
-        .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(OneTheme.secondaryInk.opacity(0.14), lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(.white.opacity(0.28), lineWidth: 0.7)
                 .allowsHitTesting(false)
         }
     }
@@ -214,47 +219,58 @@ struct OnboardingView: View {
     }
 
     private var onboardingFooter: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 7) {
-                ForEach(pages.indices, id: \.self) { index in
-                    Capsule()
-                        .fill(index == pageIndex ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.20))
-                        .frame(width: index == pageIndex ? 24 : 7, height: 7)
-                }
-            }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pageIndex)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Step \(pageIndex + 1) of \(pages.count)")
-
-            HStack(spacing: 12) {
-                if pageIndex > 0 {
-                    Button(action: goBack) {
-                        Image(systemName: "arrow.left")
-                            .frame(width: 54, height: 54)
+        LiquidGlassSurface(radius: 24) {
+            VStack(spacing: 12) {
+                HStack(spacing: 7) {
+                    ForEach(pages.indices, id: \.self) { index in
+                        Capsule()
+                            .fill(index == pageIndex ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.20))
+                            .frame(width: index == pageIndex ? 24 : 7, height: 7)
                     }
-                    .buttonStyle(OneSecondaryButtonStyle())
-                    .accessibilityIdentifier("onboarding-back")
-                    .accessibilityLabel("Back")
                 }
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pageIndex)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Step \(pageIndex + 1) of \(pages.count)")
 
-                Button(action: advance) {
-                    HStack {
-                        Text(isSaving ? "Saving…" : (pageIndex == pages.count - 1 ? "Finish setup" : "Continue"))
-                        Spacer()
-                        if isSaving {
-                            ProgressView().tint(.white)
-                        } else {
-                            Image(systemName: pageIndex == pages.count - 1 ? "checkmark" : "arrow.right")
+                HStack(spacing: 12) {
+                    if pageIndex > 0 {
+                        Button(action: goBack) {
+                            Image(systemName: "arrow.left")
+                                .frame(width: 54, height: 54)
                         }
+                        .buttonStyle(.glass)
+                        .accessibilityIdentifier("onboarding-back")
+                        .accessibilityLabel("Back")
                     }
+
+                    Button(action: advance) {
+                        HStack {
+                            Text(isSaving ? "Saving…" : (pageIndex == pages.count - 1 ? "Finish setup" : "Continue"))
+                            Spacer()
+                            if isSaving {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: pageIndex == pages.count - 1 ? "checkmark" : "arrow.right")
+                            }
+                        }
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .frame(maxWidth: .infinity, minHeight: 54)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(OneTheme.accentBlue)
+                    .disabled(isSaving)
+                    .accessibilityIdentifier("onboarding-continue")
                 }
-                .buttonStyle(OnePrimaryButtonStyle())
-                .disabled(isSaving)
-                .accessibilityIdentifier("onboarding-continue")
             }
+            .padding(14)
         }
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(.white.opacity(0.30), lineWidth: 0.7)
+                .allowsHitTesting(false)
+        }
     }
 
     private func advance() {

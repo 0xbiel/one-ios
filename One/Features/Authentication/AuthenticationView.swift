@@ -6,13 +6,15 @@ struct LoginView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focusedField: Field?
     @State private var pairingCode = ""
-    @State private var emailCode = ""
+    @State private var emailCode = LoginView.debugShowsEmailConfirmation ? "482701" : ""
     @State private var emailChallenge = LoginView.debugShowsEmailConfirmation
     @State private var isSubmitting = false
     @State private var mode = 0
     @State private var name = ""
     @State private var email = LoginView.debugShowsEmailConfirmation ? "you@example.com" : ""
     @State private var homeName = ""
+    @State private var careSetting = "home"
+    @State private var supportFocus = "mci"
     @State private var consent = false
     @State private var signInMethod: SignInMethod = .email
     @State private var validationMessage: String?
@@ -48,25 +50,25 @@ struct LoginView: View {
 
     private var modeTitle: String {
         switch mode {
-        case 1: "Create a household."
-        case 2: "Join a household."
-        default: "Sign in to your home."
+        case 1: "Create a care space."
+        case 2: "Join a care space."
+        default: "Sign in to your care space."
         }
     }
 
     private var modeDescription: String {
         switch mode {
-        case 1: "Start with an account for the people you trust."
+        case 1: "Set up ONE for a private home or residence, with optional MCI-focused support around the person’s own baseline."
         case 2: "Enter the one-time invitation from a caregiver."
-        default: "Use your email or a one-time pairing code to open your household."
+        default: "Use your email or a one-time pairing code to open your care space."
         }
     }
 
     private var actionTitle: String {
-        if mode == 2 { return "Join household" }
+        if mode == 2 { return "Join care space" }
         if mode == 0 && signInMethod == .pairing { return "Open my home" }
         if emailChallenge { return "Verify with code" }
-        return mode == 1 ? "Create household" : "Email me a code"
+        return mode == 1 ? "Create care space" : "Email me a code"
     }
 
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -154,7 +156,7 @@ struct LoginView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 10)
 
-            Text("Sign in to an existing household, create one for your care circle, or join with an invitation.")
+            Text("Sign in to an existing care space, create one for your care circle, or join with an invitation.")
                 .font(.body)
                 .foregroundStyle(OneTheme.secondaryInk)
                 .lineSpacing(3)
@@ -205,7 +207,7 @@ struct LoginView: View {
             }
             .padding(.top, 36)
 
-            Label("Your household data stays scoped to the people and purposes you choose.", systemImage: "lock")
+            Label("Your care-space data stays scoped to the people and purposes you choose.", systemImage: "lock")
                 .font(.caption)
                 .foregroundStyle(OneTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
@@ -231,7 +233,7 @@ struct LoginView: View {
                 confirmationContent
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(mode == 2 ? "HOUSEHOLD INVITATION" : mode == 1 ? "CREATE YOUR HOME" : "WELCOME BACK")
+                    Text(mode == 2 ? "CARE-SPACE INVITATION" : mode == 1 ? "CREATE YOUR CARE SPACE" : "WELCOME BACK")
                         .font(.caption.weight(.bold))
                         .tracking(1.2)
                         .foregroundStyle(OneTheme.cyan)
@@ -267,11 +269,13 @@ struct LoginView: View {
 
     private var confirmationContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Image(systemName: "envelope.badge")
-                .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(OneTheme.accentBlue)
-                .frame(width: 62, height: 62)
-                .background(OneTheme.accentBlue.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            LiquidGlassSurface(radius: 18) {
+                Image(systemName: "envelope.badge")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(OneTheme.accentBlue)
+                    .frame(width: 62, height: 62)
+                    .background(OneTheme.accentBlue.opacity(0.065), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
 
             Text("CHECK YOUR EMAIL")
                 .font(.caption.weight(.bold))
@@ -292,17 +296,8 @@ struct LoginView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 10)
 
-            authField("Six-digit code", systemImage: "number", text: $emailCode, field: .emailCode)
-                .keyboardType(.numberPad)
-                .textContentType(.oneTimeCode)
-                .onChange(of: emailCode) { _, value in
-                    emailCode = sanitizedCode(value)
-                }
-                .accessibilityLabel("Email verification code")
+            emailVerificationCodeField
                 .padding(.top, 28)
-
-            verificationNote
-                .padding(.top, 12)
 
             Button(action: resendEmailCode) {
                 Text(isSubmitting ? "Sending…" : "Send a new code")
@@ -345,43 +340,12 @@ struct LoginView: View {
     }
 
     private var authHeader: some View {
-        HStack(spacing: 10) {
+        HStack {
             OneBrandMark(compact: true)
-
             Spacer()
-
-            Text(connectionLabel)
-                .font(.caption2.weight(.semibold))
-                .tracking(0.5)
-                .foregroundStyle(OneTheme.secondaryInk)
-                .overlay(alignment: .leading) {
-                    Circle()
-                        .fill(connectionColor)
-                        .frame(width: 7, height: 7)
-                        .offset(x: -12)
-                }
-                .padding(.leading, 12)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("ONE, \(connectionLabel.lowercased())")
-    }
-
-    private var connectionLabel: String {
-        switch store.backendState {
-        case .connected: "API READY"
-        case .checking: "CONNECTING"
-        case .unavailable: "OFFLINE"
-        case .demo: "PREVIEW"
-        }
-    }
-
-    private var connectionColor: Color {
-        switch store.backendState {
-        case .connected: OneTheme.mint
-        case .checking: OneTheme.amber
-        case .unavailable: OneTheme.amber
-        case .demo: OneTheme.accentBlue
-        }
+        .accessibilityLabel("ONE")
     }
 
     private var signInMethodPicker: some View {
@@ -391,16 +355,22 @@ struct LoginView: View {
                 .tracking(1.1)
                 .foregroundStyle(OneTheme.secondaryInk)
 
-            HStack(spacing: 4) {
-                authOption("Email code", selected: signInMethod == .email, identifier: "auth-method-email") {
-                    signInMethod = .email
+            LiquidGlassSurface(radius: 16) {
+                HStack(spacing: 4) {
+                    authOption("Email code", selected: signInMethod == .email, identifier: "auth-method-email") {
+                        signInMethod = .email
+                    }
+                    authOption("Pairing code", selected: signInMethod == .pairing, identifier: "auth-method-pairing") {
+                        signInMethod = .pairing
+                    }
                 }
-                authOption("Pairing code", selected: signInMethod == .pairing, identifier: "auth-method-pairing") {
-                    signInMethod = .pairing
-                }
+                .padding(4)
             }
-            .padding(4)
-            .background(OneTheme.controlFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(.white.opacity(0.28), lineWidth: 0.6)
+                    .allowsHitTesting(false)
+            }
         }
     }
 
@@ -433,8 +403,41 @@ struct LoginView: View {
                             .textContentType(.emailAddress)
                             .textInputAutocapitalization(.never)
                             .keyboardType(.emailAddress)
-                        authField("Household name (optional)", systemImage: "house", text: $homeName, field: .homeName)
+                        authField("Care space name (optional)", systemImage: "house", text: $homeName, field: .homeName)
                             .textContentType(.organizationName)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Care setting")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(OneTheme.secondaryInk)
+                            Picker("Care setting", selection: $careSetting) {
+                                Text("Private home").tag("home")
+                                Text("Residence").tag("residence")
+                            }
+                            .pickerStyle(.segmented)
+                            Text(careSetting == "residence" ? "For assisted living, residential care, or another staffed setting." : "For a person living at home with family or caregiver support.")
+                                .font(.caption)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(14)
+                        .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Support focus")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(OneTheme.secondaryInk)
+                            Picker("Support focus", selection: $supportFocus) {
+                                Text("MCI support").tag("mci")
+                                Text("General").tag("general")
+                            }
+                            .pickerStyle(.segmented)
+                            Text(supportFocus == "mci" ? "Tailor daily check-ins and explanations for mild cognitive impairment support without diagnosing or replacing clinical care." : "Use ONE for general cognitive and daily-routine support.")
+                                .font(.caption)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(14)
+                        .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     } else if mode == 0 {
                         if signInMethod == .email {
                             authField("Email", systemImage: "envelope", text: $email, field: .email)
@@ -475,14 +478,12 @@ struct LoginView: View {
                                 emailCode = sanitizedCode(value)
                             }
                             .accessibilityLabel("Email verification code")
-
-                        verificationNote
                     }
 
                     if mode == 1 {
                         Toggle(isOn: $consent) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("I consent to ONE storing the household account data needed for this service.")
+                                Text("I consent to ONE storing the care-space account data needed for this service.")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(OneTheme.ink)
                                 Text("You can review these choices during setup and later in Account.")
@@ -501,24 +502,65 @@ struct LoginView: View {
         }
     }
 
-    private var verificationNote: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label("Code requested", systemImage: "checkmark.circle.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(OneTheme.mint)
-            if let challenge = store.emailChallenge, challenge.delivery == "development_outbox", let devCode = challenge.devCode {
-                Text("Local development code: \(devCode)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(OneTheme.secondaryInk)
-            } else {
-                Text("Check the email address tied to this household for the six-digit code.")
-                    .font(.caption)
-                    .foregroundStyle(OneTheme.secondaryInk)
+    private var emailVerificationCodeField: some View {
+        LiquidGlassSurface(radius: 20) {
+            ZStack {
+                HStack(spacing: 8) {
+                    ForEach(0..<6, id: \.self) { index in
+                        verificationDigit(at: index)
+                            .padding(.trailing, index == 2 ? 10 : 0)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onTapGesture { focusedField = .emailCode }
+
+                TextField("Verification code", text: $emailCode)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .focused($focusedField, equals: .emailCode)
+                    .foregroundStyle(.clear)
+                    .tint(.clear)
+                    .textFieldStyle(.plain)
+                    .frame(maxWidth: .infinity, minHeight: 62)
+                    .contentShape(Rectangle())
+                    .onChange(of: emailCode) { _, value in
+                        emailCode = sanitizedCode(value)
+                        validationMessage = nil
+                        store.authError = nil
+                    }
+                    .accessibilityLabel("Email verification code")
+                    .accessibilityValue(emailCode.isEmpty ? "Empty" : "\(emailCode.count) of 6 digits entered")
+                    .accessibilityIdentifier("auth-field-emailCode")
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(OneTheme.mint.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 70)
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(focusedField == .emailCode ? OneTheme.accentBlue.opacity(0.62) : .white.opacity(0.28), lineWidth: focusedField == .emailCode ? 1.2 : 0.6)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func verificationDigit(at index: Int) -> some View {
+        let digits = Array(emailCode)
+        let digit = index < digits.count ? String(digits[index]) : ""
+        let activeIndex = min(emailCode.count, 5)
+        let isActive = focusedField == .emailCode && index == activeIndex
+
+        return VStack(spacing: 6) {
+            Text(digit.isEmpty ? " " : digit)
+                .font(.system(size: 27, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(OneTheme.ink)
+                .frame(height: 34)
+
+            Capsule()
+                .fill(isActive ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(digit.isEmpty ? 0.22 : 0.55))
+                .frame(width: 34, height: isActive ? 2.5 : 1.5)
+        }
+        .frame(width: 36, height: 54)
     }
 
     private var authFooter: some View {
@@ -536,7 +578,7 @@ struct LoginView: View {
             }
             .buttonStyle(OnePrimaryButtonStyle())
             .disabled(isSubmitting)
-            .accessibilityHint("Account access is protected by a short-lived backend session")
+            .accessibilityHint("Sign in securely to your ONE care space")
 
             Text(footerMessage)
                 .font(.caption)
@@ -547,36 +589,33 @@ struct LoginView: View {
     }
 
     private func authField(_ title: String, systemImage: String, text: Binding<String>, field: Field) -> some View {
-        ZStack(alignment: .leading) {
-            TextField(title, text: text)
-                .textFieldStyle(.plain)
-                .padding(.leading, 48)
-                .padding(.trailing, 15)
-                .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
-                .focused($focusedField, equals: field)
-                .submitLabel(field == .emailCode || field == .pairingCode ? .go : .next)
-                .onSubmit { focusNext(after: field) }
-                .onChange(of: text.wrappedValue) { _, _ in
-                    validationMessage = nil
-                    store.authError = nil
-                }
+        LiquidGlassSurface(radius: 14) {
+            ZStack(alignment: .leading) {
+                TextField(title, text: text)
+                    .textFieldStyle(.plain)
+                    .padding(.leading, 48)
+                    .padding(.trailing, 15)
+                    .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+                    .focused($focusedField, equals: field)
+                    .submitLabel(field == .emailCode || field == .pairingCode ? .go : .next)
+                    .onSubmit { focusNext(after: field) }
+                    .onChange(of: text.wrappedValue) { _, _ in
+                        validationMessage = nil
+                        store.authError = nil
+                    }
 
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(OneTheme.secondaryInk)
-                .frame(width: 20)
-                .padding(.leading, 15)
-                .allowsHitTesting(false)
-        }
-        .frame(maxWidth: .infinity, minHeight: 54)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(OneTheme.surface)
-                .allowsHitTesting(false)
+                Image(systemName: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(OneTheme.secondaryInk)
+                    .frame(width: 20)
+                    .padding(.leading, 15)
+                    .allowsHitTesting(false)
+            }
+            .frame(maxWidth: .infinity, minHeight: 54)
         }
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(focusedField == field ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.16), lineWidth: focusedField == field ? 1.5 : 0.75)
+                .stroke(focusedField == field ? OneTheme.accentBlue : .white.opacity(0.32), lineWidth: focusedField == field ? 1.35 : 0.65)
                 .allowsHitTesting(false)
         }
         .accessibilityIdentifier("auth-field-\(field.rawValue)")
@@ -623,8 +662,11 @@ struct LoginView: View {
                 email: email,
                 purpose: mode == 1 ? "create" : "login",
                 displayName: mode == 1 ? name : nil,
-                homeName: homeName.isEmpty ? "ONE Home" : homeName
+                homeName: homeName.isEmpty ? "ONE Home" : homeName,
+                careSetting: mode == 1 ? careSetting : "home",
+                supportFocus: mode == 1 ? supportFocus : "general"
             )
+            applyDevelopmentCodeIfAvailable()
             isSubmitting = false
         }
     }
@@ -649,9 +691,10 @@ struct LoginView: View {
             } else if emailChallenge {
                 await store.login(email: email, code: emailCode)
             } else {
-                if await store.requestEmailCode(email: email, purpose: mode == 1 ? "create" : "login", displayName: mode == 1 ? name : nil, homeName: homeName.isEmpty ? "ONE Home" : homeName) != nil {
+                if await store.requestEmailCode(email: email, purpose: mode == 1 ? "create" : "login", displayName: mode == 1 ? name : nil, homeName: homeName.isEmpty ? "ONE Home" : homeName, careSetting: mode == 1 ? careSetting : "home", supportFocus: mode == 1 ? supportFocus : "general") != nil {
                     emailChallenge = true
-                    focusedField = .emailCode
+                    applyDevelopmentCodeIfAvailable()
+                    if emailCode.isEmpty { focusedField = .emailCode }
                 }
             }
             isSubmitting = false
@@ -663,7 +706,7 @@ struct LoginView: View {
             return "Enter the complete six-digit code to continue."
         }
         if mode == 1 && name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Enter your name to create the household."
+            return "Enter your name to create the care space."
         }
         if trimmedEmail.isEmpty {
             return "Enter your email address to continue."
@@ -706,5 +749,16 @@ struct LoginView: View {
 
     private func sanitizedCode(_ value: String) -> String {
         String(value.filter(\.isNumber).prefix(6))
+    }
+
+    private func applyDevelopmentCodeIfAvailable() {
+#if DEBUG
+        guard let challenge = store.emailChallenge,
+              challenge.delivery == "development_outbox",
+              let devCode = challenge.devCode,
+              isSixDigitCode(devCode) else { return }
+        emailCode = sanitizedCode(devCode)
+        focusedField = nil
+#endif
     }
 }
