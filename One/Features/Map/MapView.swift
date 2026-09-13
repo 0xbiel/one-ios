@@ -151,23 +151,21 @@ struct ScanView: View {
                         Text("Refresh the home map")
                             .font(.system(size: 36, weight: .bold, design: .rounded))
                             .tracking(-1)
-                        Text("Scan the room, then finish with this iPhone held still where the camera will remain. ONE can place that same paired camera inside the LiDAR model.")
+                        Text("Scan the room with this iPhone. If your fixed camera is a Mac or another browser device, leave Map only selected; ONE will place that camera later from its own fixed live view.")
                             .foregroundStyle(OneTheme.secondaryInk)
 
                         if !store.pairedCameras.isEmpty {
                             SurfaceCard(radius: 22) {
                                 VStack(alignment: .leading, spacing: 12) {
-                                    Text("Camera to position").font(.headline)
-                                    Picker("Camera to position", selection: $selectedCameraID) {
-                                        Text("Map only").tag(UUID?.none)
+                                    Text("Direct camera registration").font(.headline)
+                                    Picker("Direct camera registration", selection: $selectedCameraID) {
+                                        Text("Map only (recommended for Mac/browser camera)").tag(UUID?.none)
                                         ForEach(store.pairedCameras) { camera in
                                             Text(camera.name).tag(UUID?.some(camera.id))
                                         }
                                     }
                                     .pickerStyle(.menu)
-                                    Text(store.pairedCameras.count == 1
-                                         ? "ONE selected the only active paired camera automatically. Finish the scan with this iPhone held still in its final camera position."
-                                         : "Choose a camera only if this iPhone is the same physical device that was paired in Safari.")
+                                    Text("Leave Map only selected when this iPhone is only the LiDAR scanner. Choose a camera only when this exact iPhone is also the paired fixed camera; its final RoomPlan pose will be registered directly.")
                                         .font(.footnote)
                                         .foregroundStyle(OneTheme.secondaryInk)
                                 }
@@ -213,14 +211,5 @@ struct ScanView: View {
         .background(OneTheme.canvas.ignoresSafeArea())
         .navigationTitle("Room scan")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            if selectedCameraID == nil, store.pairedCameras.count == 1 {
-                selectedCameraID = store.pairedCameras[0].id
-            }
-        }
-        .onChange(of: store.pairedCameras) { _, cameras in
-            guard selectedCameraID == nil, cameras.count == 1 else { return }
-            selectedCameraID = cameras[0].id
-        }
     }
 }
