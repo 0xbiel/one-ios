@@ -383,11 +383,22 @@ final class AppStore {
         }
     }
 
-    func uploadRoomPlan(_ capture: RoomPlanCaptureResult, cameraID: UUID?) async {
-        guard !runtimeConfiguration.isDemoMode, let session else { return }
+    func uploadRoomPlan(_ capture: RoomPlanCaptureResult, cameraID: UUID?) async -> Bool {
+        guard !runtimeConfiguration.isDemoMode else {
+            authError = "RoomPlan scans can only be saved while connected to the live ONE backend."
+            return false
+        }
+        guard let session else {
+            authError = "Your ONE session has expired. Sign in again before saving this LiDAR scan."
+            return false
+        }
+        if let expiresAt = session.expiresAt, expiresAt <= Date() {
+            authError = "Your ONE session has expired. Sign in again before saving this LiDAR scan."
+            return false
+        }
         guard RoomPlanCapability.isSupported else {
             authError = RoomPlanCaptureError.unsupportedDevice.localizedDescription
-            return
+            return false
         }
 
         isRoomPlanUploading = true
@@ -468,6 +479,7 @@ final class AppStore {
             } else if !scene.isRenderable3D {
                 roomPlanModelError = "The uploaded scan is not ready to display yet."
             }
+            return true
         } catch {
             if let uploadedMapID, let artifactData {
                 pendingRoomPlanMapID = uploadedMapID
@@ -477,7 +489,14 @@ final class AppStore {
                     roomPlanModelError = "The 3D asset could not be attached. Tap retry to upload it again."
                 }
             }
-            authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the native room scan."
+            if let apiError = error as? OneAPIError,
+               case let .server(status, _) = apiError,
+               status == 401 {
+                authError = "Your ONE session expired while saving the LiDAR scan. Sign in again, then retry the scan."
+            } else {
+                authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the native room scan."
+            }
+            return false
         }
     }
 

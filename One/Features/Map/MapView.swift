@@ -128,8 +128,8 @@ struct ScanView: View {
                     switch result {
                     case let .success(capture):
                         Task {
-                            await store.uploadRoomPlan(capture, cameraID: selectedCameraID)
-                            if store.authError == nil && (selectedCameraID == nil || store.scene.cameraRegistration?.status == .positioned) {
+                            let saved = await store.uploadRoomPlan(capture, cameraID: selectedCameraID)
+                            if saved && (selectedCameraID == nil || store.scene.cameraRegistration?.status == .positioned) {
                                 dismiss()
                             }
                         }
