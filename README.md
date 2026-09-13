@@ -10,7 +10,11 @@ Room scans use a versioned normalized model (`units = m`, `upAxis = Y`) and shou
 
 ## Build
 
-Open `One.xcodeproj` in Xcode 27 or newer. The project targets iOS 26.0. RoomPlan requires a physical LiDAR-capable device; the simulator and non-LiDAR devices show the manual-zone fallback.
+Open `One.xcodeproj` in Xcode 26.2 or newer. The project targets iOS 26.0;
+the GitHub Actions workflow pins Xcode 26.2 on `macos-15` so it does not fall
+back to that runner's Xcode 16/iOS 18 default. RoomPlan requires a physical
+LiDAR-capable device; the simulator and non-LiDAR devices show the manual-zone
+fallback.
 
 The app includes a small `HTTPOneAPIClient` for the versioned FastAPI contract.
 `AppStore.demo` keeps safe fixtures for previews and tests. A configured build

@@ -3,9 +3,25 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: macos-15
+    env:
+      # macos-15 defaults to Xcode 16.4/iOS 18, while this project uses the
+      # iOS 26 SDK for the native RoomPlan and Liquid Glass implementation.
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+      - name: Select and verify Xcode 26
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          case "$sdk_version" in
+            26.*) ;;
+            *)
+              echo "Expected an iOS 26 simulator SDK, found $sdk_version"
+              exit 1
+              ;;
+          esac
       - name: Build
-        run: xcodebuild -project One.xcodeproj -scheme One -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project One.xcodeproj -scheme One -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
       - name: Test
-        run: xcodebuild -project One.xcodeproj -scheme One -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' CODE_SIGNING_ALLOWED=NO test
+        run: xcodebuild -project One.xcodeproj -scheme One -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test
