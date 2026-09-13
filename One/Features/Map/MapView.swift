@@ -127,6 +127,24 @@ struct ScanView: View {
                     }
                 }
                 .ignoresSafeArea()
+
+                VStack {
+                    Spacer()
+                    Button {
+                        isCapturing = false
+                    } label: {
+                        Label("Done scanning", systemImage: "checkmark.circle.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(OneTheme.accentBlue)
+                    .foregroundStyle(.white)
+                    .disabled(!isCapturing)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
+                }
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -147,7 +165,9 @@ struct ScanView: View {
                                         }
                                     }
                                     .pickerStyle(.menu)
-                                    Text("Choose a camera only if this iPhone is the same physical device that was paired in Safari.")
+                                    Text(store.pairedCameras.count == 1
+                                         ? "ONE selected the only active paired camera automatically. Finish the scan with this iPhone held still in its final camera position."
+                                         : "Choose a camera only if this iPhone is the same physical device that was paired in Safari.")
                                         .font(.footnote)
                                         .foregroundStyle(OneTheme.secondaryInk)
                                 }
@@ -193,5 +213,14 @@ struct ScanView: View {
         .background(OneTheme.canvas.ignoresSafeArea())
         .navigationTitle("Room scan")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            if selectedCameraID == nil, store.pairedCameras.count == 1 {
+                selectedCameraID = store.pairedCameras[0].id
+            }
+        }
+        .onChange(of: store.pairedCameras) { _, cameras in
+            guard selectedCameraID == nil, cameras.count == 1 else { return }
+            selectedCameraID = cameras[0].id
+        }
     }
 }

@@ -49,11 +49,20 @@ struct RoomPlanCaptureView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: RoomCaptureView, context: Context) {
-        guard isCapturing, !context.coordinator.hasStarted else { return }
-        let configuration = RoomCaptureSession.Configuration()
-        context.coordinator.hasStarted = true
-        view.captureSession.run(configuration: configuration)
-        context.coordinator.beginVisualSampling(session: view.captureSession)
+        if isCapturing {
+            guard !context.coordinator.hasStarted else { return }
+            let configuration = RoomCaptureSession.Configuration()
+            context.coordinator.hasStarted = true
+            context.coordinator.hasStopped = false
+            view.captureSession.run(configuration: configuration)
+            context.coordinator.beginVisualSampling(session: view.captureSession)
+            return
+        }
+
+        guard context.coordinator.hasStarted, !context.coordinator.hasStopped else { return }
+        context.coordinator.hasStopped = true
+        context.coordinator.stopVisualSampling()
+        view.captureSession.stop()
     }
 
     static func dismantleUIView(_ view: RoomCaptureView, coordinator: Coordinator) {
@@ -64,6 +73,7 @@ struct RoomPlanCaptureView: UIViewRepresentable {
     final class Coordinator: NSObject, RoomCaptureSessionDelegate {
         let onComplete: @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void
         var hasStarted = false
+        var hasStopped = false
         private var visualSamplingTimer: Timer?
         private var visualSamples: [RoomPlanVisualSample] = []
         private let imageContext = CIContext(options: [.cacheIntermediates: false])
