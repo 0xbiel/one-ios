@@ -33,7 +33,7 @@ struct HomeView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 28) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("ONE").font(.caption.weight(.bold)).tracking(2).foregroundStyle(OneTheme.accentBlue)
+                        OneBrandMark(compact: true)
                         Text("Your home, in view.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.4).foregroundStyle(OneTheme.ink)
                         Text("A calm, human-readable picture of today.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
                     }

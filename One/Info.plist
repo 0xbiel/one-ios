@@ -14,12 +14,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>ONE_API_BASE_URL</key>
-	<string>$(ONE_API_BASE_URL)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>ONE uses the camera only when you choose to scan a room or view a paired camera.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ONE uses the microphone only while you press and hold to talk.</string>
+	<key>ONE_API_BASE_URL</key>
+	<string>$(ONE_API_BASE_URL)</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 </dict>

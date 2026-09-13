@@ -20,6 +20,7 @@ targets:
       - path: One/Features
       - path: One/Models
     resources:
+      - path: One/Assets.xcassets
       - path: One/PrivacyInfo.xcprivacy
     settings:
       base:

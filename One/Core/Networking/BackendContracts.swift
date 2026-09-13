@@ -23,7 +23,28 @@ struct CanonicalAPIError: Codable, Sendable {
 struct PairingChallengeRequest: Codable, Sendable { let code: String }
 struct EmailAuthRequest: Codable, Sendable { let email: String; let purpose: String; let displayName: String?; let homeName: String; let role: UserRole }
 struct EmailAuthVerifyRequest: Codable, Sendable { let email: String; let code: String }
-struct EmailAuthChallenge: Codable, Sendable { let verificationID: UUID; let expiresInSeconds: Int; let delivery: String; let devCode: String?; let email: String; let purpose: String; let homeID: UUID; let userID: UUID; let role: String }
+struct EmailAuthChallenge: Codable, Sendable {
+    let verificationID: UUID
+    let expiresInSeconds: Int
+    let delivery: String
+    let devCode: String?
+    let email: String
+    let purpose: String
+    let homeID: UUID
+    let userID: UUID
+    let role: String
+
+    private enum CodingKeys: String, CodingKey {
+        case verificationID = "verificationId"
+        case expiresInSeconds
+        case delivery
+        case devCode = "devCode"
+        case email, purpose
+        case homeID = "homeId"
+        case userID = "userId"
+        case role
+    }
+}
 struct PairingChallengeResponse: Codable, Sendable {
     let pairingID: UUID
     let expiresAt: Date
@@ -320,50 +341,50 @@ struct HTTPOneAPIClient: OneAPIClient {
     }
 
     func events(homeID: UUID) async throws -> [ObservedEvent] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.uuidString)/events"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/events"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "limit", value: "50")]
         let response: BackendEventsResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap(\.event)
     }
 
     func roomObjects(homeID: UUID) async throws -> [RoomObject] {
-        let response: BackendObjectsResponse = try await send(path: "/homes/\(homeID.uuidString)/objects/last-seen", method: "GET", body: nil, requiresSession: true)
+        let response: BackendObjectsResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/objects/last-seen", method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap(\.object)
     }
 
     func cameraCount(homeID: UUID) async throws -> Int {
-        let response: BackendCamerasResponse = try await send(path: "/homes/\(homeID.uuidString)/cameras", method: "GET", body: nil, requiresSession: true)
+        let response: BackendCamerasResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/cameras", method: "GET", body: nil, requiresSession: true)
         return response.data.count
     }
 
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] {
-        let response: BackendFamilyMembersResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members", method: "GET", body: nil, requiresSession: true)
+        let response: BackendFamilyMembersResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/family/members", method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.account }
     }
 
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String {
         let body = try JSONEncoder.one.encode(request)
-        let response: BackendFamilyInviteResponse = try await send(path: "/homes/\(homeID.uuidString)/family/invites", method: "POST", body: body, requiresSession: true)
+        let response: BackendFamilyInviteResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/family/invites", method: "POST", body: body, requiresSession: true)
         return response.code
     }
 
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult {
         let body = try JSONEncoder.one.encode(request)
-        let response: BackendFamilyMemberMutationResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members/\(userID.uuidString)", method: "PATCH", body: body, requiresSession: true)
+        let response: BackendFamilyMemberMutationResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/family/members/\(userID.oneAPIPath)", method: "PATCH", body: body, requiresSession: true)
         guard let member = response.data.account else { throw OneAPIError.invalidResponse }
         return FamilyMemberMutationResult(member: member, invalidatedSessions: response.invalidatedSessions)
     }
 
     func removeFamilyMember(homeID: UUID, userID: UUID) async throws -> FamilyMemberMutationResult {
-        let response: BackendFamilyMemberMutationResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members/\(userID.uuidString)", method: "DELETE", body: nil, requiresSession: true)
+        let response: BackendFamilyMemberMutationResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/family/members/\(userID.oneAPIPath)", method: "DELETE", body: nil, requiresSession: true)
         guard let member = response.data.account else { throw OneAPIError.invalidResponse }
         return FamilyMemberMutationResult(member: member, invalidatedSessions: response.invalidatedSessions)
     }
 
     func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool = true) async throws -> [MedicationPlan] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.uuidString)/medication-plans"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/medication-plans"), resolvingAgainstBaseURL: false)!
         var query = [URLQueryItem(name: "active_only", value: activeOnly ? "true" : "false")]
-        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.uuidString)) }
+        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.oneAPIPath)) }
         components.queryItems = query
         let response: BackendMedicationPlansResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.plan }
@@ -371,23 +392,23 @@ struct HTTPOneAPIClient: OneAPIClient {
 
     func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan {
         let body = try JSONEncoder.one.encode(request)
-        let response: BackendMedicationPlan = try await send(path: "/homes/\(homeID.uuidString)/medication-plans", method: "POST", body: body, requiresSession: true)
+        let response: BackendMedicationPlan = try await send(path: "/homes/\(homeID.oneAPIPath)/medication-plans", method: "POST", body: body, requiresSession: true)
         guard let plan = response.plan else { throw OneAPIError.invalidResponse }
         return plan
     }
 
     func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan {
         let body = try JSONEncoder.one.encode(request)
-        let response: BackendMedicationPlan = try await send(path: "/homes/\(homeID.uuidString)/medication-plans/\(planID.uuidString)", method: "PATCH", body: body, requiresSession: true)
+        let response: BackendMedicationPlan = try await send(path: "/homes/\(homeID.oneAPIPath)/medication-plans/\(planID.oneAPIPath)", method: "PATCH", body: body, requiresSession: true)
         guard let plan = response.plan else { throw OneAPIError.invalidResponse }
         return plan
     }
 
     func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] {
-        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.uuidString)/medication-reminders"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/medication-reminders"), resolvingAgainstBaseURL: false)!
         let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.dateFormat = "yyyy-MM-dd"; formatter.timeZone = TimeZone(secondsFromGMT: 0)
         var query = [URLQueryItem(name: "day", value: formatter.string(from: day))]
-        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.uuidString)) }
+        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.oneAPIPath)) }
         components.queryItems = query
         let response: BackendMedicationRemindersResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.dose }
@@ -395,7 +416,7 @@ struct HTTPOneAPIClient: OneAPIClient {
 
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws {
         let body = try JSONEncoder.one.encode(request)
-        let _: BackendConsentResponse = try await send(path: "/homes/\(homeID.uuidString)/consents", method: "POST", body: body, requiresSession: true)
+        let _: BackendConsentResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/consents", method: "POST", body: body, requiresSession: true)
     }
 
     func logout() async throws { try await sendEmpty(path: "/sessions/current", method: "DELETE") }
@@ -409,9 +430,9 @@ struct HTTPOneAPIClient: OneAPIClient {
         guard let homeID else { throw OneAPIError.missingSession }
         guard JSONSerialization.isValidJSONObject(try JSONSerialization.jsonObject(with: normalizedJSON)) else { throw OneAPIError.invalidResponse }
         let mapData = try JSONSerialization.jsonObject(with: normalizedJSON)
-        let payload: [String: Any] = ["room_id": roomID.uuidString, "coordinate_frame": "roomplan-local", "map_data": mapData]
+        let payload: [String: Any] = ["room_id": roomID.oneAPIPath, "coordinate_frame": "roomplan-local", "map_data": mapData]
         let body = try JSONSerialization.data(withJSONObject: payload)
-        let response: BackendMapUploadResponse = try await send(path: "/homes/\(homeID.uuidString)/maps", method: "POST", body: body, requiresSession: true)
+        let response: BackendMapUploadResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/maps", method: "POST", body: body, requiresSession: true)
         let digest = SHA256.hash(data: normalizedJSON).map { String(format: "%02x", $0) }.joined()
         return ArtifactUploadResponse(artifactID: UUID(uuidString: response.id) ?? UUID(), sha256: digest, expiresAt: nil)
     }
@@ -419,42 +440,42 @@ struct HTTPOneAPIClient: OneAPIClient {
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse {
         guard let homeID else { throw OneAPIError.missingSession }
         let body = try JSONEncoder.one.encode(RoomPlanUploadRequest(roomID: roomID, normalizedScan: scan, scanMetadata: metadata))
-        return try await send(path: "/homes/\(homeID.uuidString)/maps/roomplan", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/maps/roomplan", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
     }
 
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse {
         guard let homeID else { throw OneAPIError.missingSession }
-        let response: BackendUSDZUploadResponse = try await send(path: "/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz", method: "PUT", body: data, requiresSession: true, headers: ["Content-Type": "model/vnd.usdz+zip", "X-ONE-Client": "native-ios-roomplan", "X-ONE-Idempotency-Key": mapID.uuidString])
+        let response: BackendUSDZUploadResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/maps/\(mapID.oneAPIPath)/usdz", method: "PUT", body: data, requiresSession: true, headers: ["Content-Type": "model/vnd.usdz+zip", "X-ONE-Client": "native-ios-roomplan", "X-ONE-Idempotency-Key": mapID.oneAPIPath])
         guard let responseMapID = UUID(uuidString: response.mapId) else { throw OneAPIError.invalidResponse }
         return USDZUploadResponse(mapID: responseMapID, source: MapSource(rawValue: response.source) ?? .legacy2D, dimension: MapDimension(rawValue: response.dimension) ?? .twoD, usdz: response.usdz)
     }
 
     func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data {
         guard let homeID else { throw OneAPIError.missingSession }
-        return try await sendRaw(path: "/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz", method: "GET", body: nil, requiresSession: true, headers: [:])
+        return try await sendRaw(path: "/homes/\(homeID.oneAPIPath)/maps/\(mapID.oneAPIPath)/usdz", method: "GET", body: nil, requiresSession: true, headers: [:])
     }
 
     func refreshScene(homeID: UUID) async throws -> SceneDescriptor {
-        try await send(path: "/homes/\(homeID.uuidString)/scene", method: "GET", body: nil, requiresSession: true)
+        try await send(path: "/homes/\(homeID.oneAPIPath)/scene", method: "GET", body: nil, requiresSession: true)
     }
 
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse {
         guard let homeID else { throw OneAPIError.missingSession }
         let body = try JSONSerialization.data(withJSONObject: ["mode": "subscribe"])
-        let response: BackendLiveKitResponse = try await send(path: "/homes/\(homeID.uuidString)/livekit/token", method: "POST", body: body, requiresSession: true)
+        let response: BackendLiveKitResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/livekit/token", method: "POST", body: body, requiresSession: true)
         guard let url = URL(string: response.url) else { throw OneAPIError.invalidResponse }
-        return LiveKitTokenResponse(websocketURL: url, token: response.token, roomName: "one-\(homeID.uuidString)", expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
+        return LiveKitTokenResponse(websocketURL: url, token: response.token, roomName: "one-\(homeID.oneAPIPath)", expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 
     func requestExport() async throws -> DataRequestResponse {
         guard let homeID else { throw OneAPIError.missingSession }
-        _ = try await send(path: "/homes/\(homeID.uuidString)/privacy/export", method: "POST", body: nil, requiresSession: true) as BackendExportResponse
+        _ = try await send(path: "/homes/\(homeID.oneAPIPath)/privacy/export", method: "POST", body: nil, requiresSession: true) as BackendExportResponse
         return DataRequestResponse(requestID: UUID(), status: "complete")
     }
 
     func requestDeletion() async throws -> DataRequestResponse {
         guard let homeID else { throw OneAPIError.missingSession }
-        let response: BackendDeletionResponse = try await send(path: "/homes/\(homeID.uuidString)/privacy/delete", method: "POST", body: nil, requiresSession: true)
+        let response: BackendDeletionResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/privacy/delete", method: "POST", body: nil, requiresSession: true)
         return DataRequestResponse(requestID: UUID(uuidString: response.requestID) ?? UUID(), status: response.status)
     }
 
@@ -514,8 +535,37 @@ struct HTTPOneAPIClient: OneAPIClient {
     }
 }
 
-private struct BackendPairingResponse: Decodable { let accessToken: String; let expiresIn: Int; let homeID: String; let userID: String; let role: String? }
-private struct BackendBootstrapResponse: Decodable { let pairingCode: String; let expiresInSeconds: Int; let homeID: String; let userID: String; let role: String? }
+private struct BackendPairingResponse: Decodable {
+    let accessToken: String
+    let expiresIn: Int
+    let homeID: String
+    let userID: String
+    let role: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case accessToken
+        case expiresIn
+        case homeID = "homeId"
+        case userID = "userId"
+        case role
+    }
+}
+
+private struct BackendBootstrapResponse: Decodable {
+    let pairingCode: String
+    let expiresInSeconds: Int
+    let homeID: String
+    let userID: String
+    let role: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case pairingCode = "pairingCode"
+        case expiresInSeconds
+        case homeID = "homeId"
+        case userID = "userId"
+        case role
+    }
+}
 private struct BackendMeResponse: Decodable { let actor: BackendActor }
 private struct BackendActor: Decodable { let role: String }
 private struct BackendConsentResponse: Decodable { let id: String? }
@@ -615,6 +665,13 @@ private struct BackendMedicationReminder: Decodable {
 }
 
 // Shared by the API adapter and AppStore when serializing RoomPlan payloads.
+private extension UUID {
+    /// The API stores UUID identifiers as lowercase text and compares route
+    /// parameters as strings. Keep every iOS route/query identifier in that
+    /// canonical form instead of using UUID.uuidString directly.
+    var oneAPIPath: String { uuidString.lowercased() }
+}
+
 extension JSONEncoder {
     static var one: JSONEncoder { let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase; return encoder }
 }

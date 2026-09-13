@@ -18,6 +18,7 @@
 		4F93247732C2307418BF5129 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EDBB883AFAF5A7F0A85739 /* Components.swift */; };
 		594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515046F62BFD6A039EDDBA3E /* OneTheme.swift */; };
 		5C908252132EEB61769D2975 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */; };
+		0FC151CF8E3544FBAB8A2682 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DA18298EEC8C43AC9D6220BA /* Assets.xcassets */; };
 		6AA42C3DB98D0BE3DD90E4EB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DD033E4F49D68C4D705B75 /* RootView.swift */; };
 		6B87F57BC95FD12C75A8E1B5 /* RoomPlanUSDZView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A92FBAC0357CF0BE5D82DED /* RoomPlanUSDZView.swift */; };
 		7398769CF793D626F08D4E6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09509CA5012A8E0B3BD17AA4 /* Models.swift */; };
@@ -59,8 +60,9 @@
 		752F610BAFB0F25DFCEAD4F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AA911D865B440547A2701529 /* MapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapView.swift; sourceTree = "<group>"; };
 		B520B423F23BD2037C9C90E9 /* OneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneApp.swift; sourceTree = "<group>"; };
-		D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanPayload.swift; sourceTree = "<group>"; };
+		D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		DA18298EEC8C43AC9D6220BA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanCaptureView.swift; sourceTree = "<group>"; };
 		D1A3257A3830A3C495984167 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
 		E7EDBB883AFAF5A7F0A85739 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
@@ -151,6 +153,7 @@
 				19D8EA82D8F8524E51CEC1FA /* Core */,
 				48D396D03446362F52AC6532 /* Features */,
 				56756CED8953D299CF20FC79 /* Models */,
+				DA18298EEC8C43AC9D6220BA /* Assets.xcassets */,
 				752F610BAFB0F25DFCEAD4F4 /* Info.plist */,
 				D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */,
 			);
@@ -323,6 +326,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0FC151CF8E3544FBAB8A2682 /* Assets.xcassets in Resources */,
 				5C908252132EEB61769D2975 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -447,7 +451,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = NMX68HLH7T;
+				DEVELOPMENT_TEAM = 92U2T283AG;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
@@ -486,7 +490,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = NMX68HLH7T;
+				DEVELOPMENT_TEAM = 92U2T283AG;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";

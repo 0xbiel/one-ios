@@ -7,6 +7,9 @@ enum OneTheme {
     static let surface = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark ? UIColor(red: 0.14, green: 0.15, blue: 0.18, alpha: 1) : UIColor.white
     })
+    static let controlFill = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(red: 0.18, green: 0.19, blue: 0.22, alpha: 1) : UIColor(red: 0.95, green: 0.95, blue: 0.96, alpha: 1)
+    })
     static let inverseSurface = Color(uiColor: UIColor { traits in
         // Inverse surfaces are intentionally dark in both appearances so camera and
         // assistant cards retain a stable, high-contrast identity.

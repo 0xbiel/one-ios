@@ -12,7 +12,32 @@ struct SurfaceCard<Content: View>: View {
     var body: some View {
         content.foregroundStyle(OneTheme.ink)
             .background(OneTheme.surface, in: .rect(cornerRadius: radius))
-            .overlay(.black.opacity(0.04), in: .rect(cornerRadius: radius))
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(.black.opacity(0.04))
+                    .allowsHitTesting(false)
+            }
+    }
+}
+
+struct OneBrandMark: View {
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: compact ? 8 : 10) {
+            Image("OneLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: compact ? 30 : 36, height: compact ? 30 : 36)
+                .accessibilityHidden(true)
+
+            Text("ONE")
+                .font(.system(size: compact ? 15 : 18, weight: .bold, design: .rounded))
+                .tracking(compact ? 1 : 1.2)
+                .foregroundStyle(OneTheme.accentBlue)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("ONE")
     }
 }
 
@@ -41,15 +66,31 @@ struct OnePrimaryButtonStyle: ButtonStyle {
     }
 }
 
+struct OneSecondaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .foregroundStyle(isEnabled ? OneTheme.ink : OneTheme.secondaryInk)
+            .padding(.horizontal, 18)
+            .frame(minHeight: 54)
+            .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(OneTheme.secondaryInk.opacity(0.16), lineWidth: 0.75)
+                    .allowsHitTesting(false)
+            }
+            .opacity(configuration.isPressed ? 0.72 : 1)
+    }
+}
+
 struct OneBackground: View {
     var body: some View {
-        ZStack {
-            OneTheme.canvas
-            Circle().fill(OneTheme.accentCyan.opacity(0.18)).frame(width: 280).blur(radius: 30).offset(x: 130, y: -310)
-            Circle().fill(OneTheme.accentBlue.opacity(0.08)).frame(width: 220).blur(radius: 40).offset(x: -160, y: 300)
-        }
+        OneTheme.canvas
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }
 

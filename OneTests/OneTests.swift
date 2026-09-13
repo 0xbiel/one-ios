@@ -66,13 +66,108 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(joined.role, .caregiver)
     }
 
+    func testAuthClientDecodesSnakeCaseIdentityFields() async throws {
+        let homeID = UUID()
+        let userID = UUID()
+        let verificationID = UUID()
+        OneURLProtocolStub.handler = { request in
+            let body: Data
+            switch request.url?.path {
+            case "/api/v1/auth/email/request":
+                body = Data("""
+                {"verification_id":"\(verificationID.uuidString)","expires_in_seconds":600,"delivery":"development_outbox","dev_code":"482701","email":"caregiver@example.com","purpose":"login","home_id":"\(homeID.uuidString)","user_id":"\(userID.uuidString)","role":"caregiver"}
+                """.utf8)
+            case "/api/v1/auth/email/verify":
+                body = Data("""
+                {"access_token":"email-token","token_type":"bearer","expires_in":3600,"home_id":"\(homeID.uuidString)","user_id":"\(userID.uuidString)","role":"caregiver"}
+                """.utf8)
+            case "/api/v1/pairing/complete":
+                body = Data("""
+                {"access_token":"pairing-token","token_type":"bearer","expires_in":3600,"home_id":"\(homeID.uuidString)","user_id":"\(userID.uuidString)"}
+                """.utf8)
+            case "/api/v1/me":
+                body = Data("""
+                {"actor":{"role":"admin"}}
+                """.utf8)
+            default:
+                throw OneAPIError.invalidResponse
+            }
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, session: URLSession(configuration: .oneTest))
+        let challenge = try await client.requestEmailCode(EmailAuthRequest(email: "caregiver@example.com", purpose: "login", displayName: nil, homeName: "ONE Home", role: .caregiver))
+        XCTAssertEqual(challenge.verificationID, verificationID)
+        XCTAssertEqual(challenge.homeID, homeID)
+        XCTAssertEqual(challenge.userID, userID)
+        XCTAssertEqual(challenge.devCode, "482701")
+
+        let emailSession = try await client.verifyEmailCode(EmailAuthVerifyRequest(email: "caregiver@example.com", code: "482701"))
+        XCTAssertEqual(emailSession.accessToken, "email-token")
+        XCTAssertEqual(emailSession.homeID, homeID)
+        XCTAssertEqual(emailSession.userID, userID)
+        XCTAssertEqual(emailSession.role, .caregiver)
+
+        let pairingSession = try await client.completePairing(code: "123456")
+        XCTAssertEqual(pairingSession.accessToken, "pairing-token")
+        XCTAssertEqual(pairingSession.homeID, homeID)
+        XCTAssertEqual(pairingSession.userID, userID)
+        XCTAssertEqual(pairingSession.role, .caregiver)
+    }
+
+    func testOnboardingConsentUpdatesLocalAccountStateAfterSaving() async {
+        let session = AuthSession(accessToken: "token", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600))
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let store = AppStore(events: [], scan: .empty, consents: [], apiClient: MockOneAPIClient(), backendState: .connected, session: session, runtimeConfiguration: configuration)
+
+        let saved = await store.recordOnboardingConsent(for: "Family sharing", granted: true)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.onboardingConsents["Family sharing"], true)
+        XCTAssertEqual(store.consents.first?.purpose, "Family sharing")
+        XCTAssertEqual(store.consents.first?.enabled, true)
+    }
+
     func testDemoModeSkipsPostAuthOnboarding() {
         XCTAssertFalse(AppStore.demo.requiresOnboarding)
+    }
+
+    func testCompletingOnboardingImmediatelyUnlocksTheApp() throws {
+        let session = AuthSession(accessToken: "token", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3_600))
+        let sessionStore = OneTestSessionStore()
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let store = AppStore(events: [], scan: .empty, consents: [], apiClient: MockOneAPIClient(), backendState: .connected, session: session, sessionStore: sessionStore, runtimeConfiguration: configuration)
+
+        XCTAssertTrue(store.requiresOnboarding)
+        XCTAssertTrue(store.completeOnboarding())
+        XCTAssertTrue(store.hasCompletedOnboarding)
+        XCTAssertFalse(store.requiresOnboarding)
+        XCTAssertNotNil(try sessionStore.load(AppStore.onboardingKey(homeID: session.homeID, userID: session.userID)))
     }
 
     func testConsentRequestUsesBackendPurposeNames() async throws {
         let client = MockOneAPIClient()
         try await client.recordConsent(homeID: UUID(), request: ConsentRequest(purpose: "family_mode", policyVersion: "2026-09", granted: false))
+    }
+
+    func testLiveConsentRouteUsesLowercaseUUIDsExpectedByBackend() async throws {
+        let homeID = UUID()
+        var capturedURL: URL?
+        OneURLProtocolStub.handler = { request in
+            capturedURL = request.url
+            let response = try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil))
+            return (response, Data("{}".utf8))
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        try await client.recordConsent(homeID: homeID, request: ConsentRequest(purpose: "video_capture", policyVersion: "2026-09", granted: true))
+
+        XCTAssertEqual(capturedURL?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/consents")
+        XCTAssertFalse(capturedURL?.path.contains(homeID.uuidString) ?? true)
     }
 
     func testDemoFamilyMemberCanBeEditedAndRemovedLocally() async throws {
@@ -133,7 +228,7 @@ final class OneTests: XCTestCase {
         let result = try await client.updateFamilyMember(homeID: homeID, userID: userID, request: FamilyMemberUpdateRequest(role: .resident))
 
         XCTAssertEqual(capturedRequest?.httpMethod, "PATCH")
-        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/homes/\(homeID.uuidString)/family/members/\(userID.uuidString)")
+        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/family/members/\(userID.uuidString.lowercased())")
         XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer token")
         let requestBody = try XCTUnwrap(capturedRequest.flatMap(requestBody))
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: requestBody) as? [String: String])
@@ -162,7 +257,7 @@ final class OneTests: XCTestCase {
         let result = try await client.removeFamilyMember(homeID: homeID, userID: userID)
 
         XCTAssertEqual(capturedRequest?.httpMethod, "DELETE")
-        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/homes/\(homeID.uuidString)/family/members/\(userID.uuidString)")
+        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/family/members/\(userID.uuidString.lowercased())")
         XCTAssertEqual(result.member.role, .primaryCaregiver)
         XCTAssertEqual(result.invalidatedSessions, 2)
     }
@@ -305,7 +400,7 @@ final class OneTests: XCTestCase {
         let uploaded = try await client.uploadRoomPlan(roomID: roomID, scan: scan, metadata: metadata)
         XCTAssertEqual(uploaded.mapID, mapID)
         XCTAssertEqual(requests[0].httpMethod, "POST")
-        XCTAssertEqual(requests[0].url?.path, "/api/v1/homes/\(homeID.uuidString)/maps/roomplan")
+        XCTAssertEqual(requests[0].url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/maps/roomplan")
         XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-ONE-Client"), "native-ios-roomplan")
         let body = try XCTUnwrap(requestBody(requests[0]))
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
@@ -315,13 +410,13 @@ final class OneTests: XCTestCase {
         let attachment = try await client.uploadRoomPlanUSDZ(mapID: mapID, data: Data([1, 2, 3, 4]))
         XCTAssertEqual(attachment.mapID, mapID)
         XCTAssertEqual(requests[1].httpMethod, "PUT")
-        XCTAssertEqual(requests[1].url?.path, "/api/v1/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz")
+        XCTAssertEqual(requests[1].url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/maps/\(mapID.uuidString.lowercased())/usdz")
         XCTAssertEqual(requests[1].value(forHTTPHeaderField: "Content-Type"), "model/vnd.usdz+zip")
         XCTAssertEqual(requestBody(requests[1]), Data([1, 2, 3, 4]))
         let downloaded = try await client.downloadRoomPlanUSDZ(mapID: mapID)
         XCTAssertEqual(downloaded, Data([0x50, 0x4B]))
         XCTAssertEqual(requests[2].httpMethod, "GET")
-        XCTAssertEqual(requests[2].url?.path, "/api/v1/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz")
+        XCTAssertEqual(requests[2].url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/maps/\(mapID.uuidString.lowercased())/usdz")
     }
 
     #if targetEnvironment(simulator)
@@ -350,6 +445,22 @@ private final class OneURLProtocolStub: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() { }
+}
+
+private final class OneTestSessionStore: SessionKeyStore, @unchecked Sendable {
+    private var values: [String: Data] = [:]
+
+    func save(_ value: Data, for key: String) throws {
+        values[key] = value
+    }
+
+    func load(_ key: String) throws -> Data? {
+        values[key]
+    }
+
+    func delete(_ key: String) throws {
+        values.removeValue(forKey: key)
+    }
 }
 
 private extension URLSessionConfiguration {

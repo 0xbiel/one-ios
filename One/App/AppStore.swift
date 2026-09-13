@@ -7,6 +7,18 @@ import RoomPlan
 final class AppStore {
     static let sessionKey = "one.auth.session"
     static func onboardingKey(homeID: UUID, userID: UUID) -> String { "one.auth.onboarding.\(homeID.uuidString).\(userID.uuidString)" }
+    private static let onboardingConsentMapping: [(label: String, purpose: String)] = [
+        ("Room and camera data", "video_capture"),
+        ("Daily check-in support", "audio_capture"),
+        ("Family sharing", "family_mode"),
+        ("Medication reminders", "medication_management")
+    ]
+    private static let onboardingConsentDefaults = [
+        "Daily check-in support": false,
+        "Room and camera data": false,
+        "Medication reminders": false,
+        "Family sharing": false
+    ]
     var role: UserRole = .caregiver
     var selectedTab = "overview"
     var events: [ObservedEvent]
@@ -28,7 +40,8 @@ final class AppStore {
     var authError: String?
     var emailChallenge: EmailAuthChallenge?
     var onboardingStep = 0
-    var onboardingConsents: [String: Bool] = ["Daily check-in support": false, "Room and camera data": false, "Medication reminders": false, "Family sharing": false]
+    var onboardingConsents = AppStore.onboardingConsentDefaults
+    var hasCompletedOnboarding = false
     var selectedSubjectName = "Everyone"
     var selectedSubjectID: UUID?
     var selectedMedicationDate = Date()
@@ -54,11 +67,33 @@ final class AppStore {
     }
 
     static func configured() -> AppStore {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-one-show-login") {
+            return AppStore.live
+        }
+        if ProcessInfo.processInfo.arguments.contains("-one-show-onboarding") {
+            let store = AppStore.live
+            let session = AuthSession(
+                accessToken: "debug-onboarding",
+                homeID: UUID(),
+                userID: UUID(),
+                role: .caregiver,
+                expiresAt: Date().addingTimeInterval(3_600)
+            )
+            store.session = session
+            store.role = session.role
+            store.hasCompletedOnboarding = false
+            return store
+        }
+#endif
         let configuration = RuntimeConfiguration()
         let store = AppStore(events: [], scan: .empty, consents: [], caregivers: [], medicationDoses: [], backendState: .checking, runtimeConfiguration: configuration)
         guard !configuration.isDemoMode else { return AppStore.demo }
         do {
-            if let data = try store.sessionStore.load(Self.sessionKey), let saved = try? JSONDecoder().decode(AuthSession.self, from: data), saved.expiresAt.map({ $0 > Date() }) ?? true { store.session = saved }
+            if let data = try store.sessionStore.load(Self.sessionKey), let saved = try? JSONDecoder().decode(AuthSession.self, from: data), saved.expiresAt.map({ $0 > Date() }) ?? true {
+                store.session = saved
+                store.hasCompletedOnboarding = (try? store.sessionStore.load(Self.onboardingKey(homeID: saved.homeID, userID: saved.userID))) != nil
+            }
         } catch { /* A missing or unreadable credential starts signed out. */ }
         store.apiClient = HTTPOneAPIClient(configuration: store.runtimeConfiguration, accessToken: store.session?.accessToken, homeID: store.session?.homeID)
         if let role = store.session?.role { store.role = role }
@@ -202,7 +237,9 @@ final class AppStore {
     }
 
     var isAuthenticated: Bool { runtimeConfiguration.isDemoMode || session != nil }
-    var requiresOnboarding: Bool { guard !runtimeConfiguration.isDemoMode, let session else { return false }; return (try? sessionStore.load(Self.onboardingKey(homeID: session.homeID, userID: session.userID))) == nil }
+    var requiresOnboarding: Bool {
+        !runtimeConfiguration.isDemoMode && session != nil && !hasCompletedOnboarding
+    }
 
     func login(pairingCode: String) async {
         authError = nil
@@ -534,31 +571,91 @@ final class AppStore {
         }
         session = authenticated; role = authenticated.role
         onboardingStep = 0
+        onboardingConsents = Self.onboardingConsentDefaults
+        hasCompletedOnboarding = (try? sessionStore.load(Self.onboardingKey(homeID: authenticated.homeID, userID: authenticated.userID))) != nil
+        emailChallenge = nil
         apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration, accessToken: authenticated.accessToken, homeID: authenticated.homeID)
         backendState = .connected
         Task { await refreshLiveData() }
     }
 
-    func completeOnboarding() { guard let session else { return }; try? sessionStore.save(Data("complete".utf8), for: Self.onboardingKey(homeID: session.homeID, userID: session.userID)); onboardingStep = 3 }
+    @discardableResult
+    func completeOnboarding() -> Bool {
+        guard let session else {
+            authError = "Your household session is no longer available. Please sign in again."
+            return false
+        }
+        do {
+            try sessionStore.save(Data("complete".utf8), for: Self.onboardingKey(homeID: session.homeID, userID: session.userID))
+            hasCompletedOnboarding = true
+            onboardingStep = 4
+            authError = nil
+            return true
+        } catch {
+            authError = "Your choices could not be saved on this device. Please try again."
+            return false
+        }
+    }
+
+    func recordOnboardingConsent(for label: String, granted: Bool) async -> Bool {
+        guard let mapping = Self.onboardingConsentMapping.first(where: { $0.label == label }) else {
+            authError = "That consent choice is not available."
+            return false
+        }
+
+        onboardingConsents[label] = granted
+        if runtimeConfiguration.isDemoMode {
+            upsertOnboardingConsent(label: label, granted: granted)
+            return true
+        }
+
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+
+        do {
+            try await apiClient.recordConsent(
+                homeID: session.homeID,
+                request: ConsentRequest(purpose: mapping.purpose, policyVersion: "2026-09", granted: granted)
+            )
+            upsertOnboardingConsent(label: label, granted: granted)
+            authError = nil
+            return true
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not save this choice."
+            return false
+        }
+    }
 
     func recordOnboardingConsents() async -> Bool {
-        guard !runtimeConfiguration.isDemoMode, let session else { return true }
-        authError = nil
-        let mapping = ["Daily check-in support": "audio_capture", "Room and camera data": "video_capture", "Medication reminders": "medication_management", "Family sharing": "family_mode"]
-        for (label, purpose) in mapping {
-            do { try await apiClient.recordConsent(homeID: session.homeID, request: ConsentRequest(purpose: purpose, policyVersion: "2026-09", granted: onboardingConsents[label] ?? false)) }
-            catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not save consent choices."; return false }
+        for mapping in Self.onboardingConsentMapping {
+            guard await recordOnboardingConsent(for: mapping.label, granted: onboardingConsents[mapping.label] ?? false) else {
+                return false
+            }
         }
         return true
     }
 
+    private func upsertOnboardingConsent(label: String, granted: Bool) {
+        let now = Date()
+        if let index = consents.firstIndex(where: { $0.purpose == label }) {
+            let existing = consents[index]
+            consents[index] = ConsentRecord(id: existing.id, purpose: label, enabled: granted, policyVersion: "2026-09", updatedAt: now)
+        } else {
+            consents.append(ConsentRecord(id: UUID(), purpose: label, enabled: granted, policyVersion: "2026-09", updatedAt: now))
+        }
+    }
+
     func logout() async {
-        let onboardingCredential = session.map { Self.onboardingKey(homeID: $0.homeID, userID: $0.userID) }
         defer {
             try? sessionStore.delete(Self.sessionKey)
-            if let onboardingCredential { try? sessionStore.delete(onboardingCredential) }
             session = nil
             authError = nil
+            onboardingStep = 0
+            onboardingConsents = Self.onboardingConsentDefaults
+            hasCompletedOnboarding = false
+            emailChallenge = nil
             apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration)
             backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable
             if !runtimeConfiguration.isDemoMode {

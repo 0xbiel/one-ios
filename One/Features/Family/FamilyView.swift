@@ -5,9 +5,11 @@ struct FamilyView: View {
     @State private var showInviteSheet = false
     @State private var editingCaregiver: CaregiverAccount?
     @State private var memberToRemove: CaregiverAccount?
+    @State private var showRemoveConfirmation = false
     @State private var showMedicationPlanSheet = false
     @State private var editingMedicationPlan: MedicationPlan?
     @State private var planToArchive: MedicationPlan?
+    @State private var showArchiveConfirmation = false
     @State private var assistantNote = ""
 
     var body: some View {
@@ -37,17 +39,27 @@ struct FamilyView: View {
             .sheet(isPresented: $showInviteSheet) { InviteCaregiverSheet(store: store) }
             .sheet(item: $editingCaregiver) { caregiver in FamilyAccessSheet(store: store, member: caregiver) }
             .sheet(isPresented: $showMedicationPlanSheet) { MedicationPlanSheet(store: store, plan: editingMedicationPlan, subjectName: store.selectedSubjectName) }
-            .confirmationDialog("Remove this person?", item: $memberToRemove) { member in
-                Button("Remove access", role: .destructive) { Task { _ = await store.removeFamilyMember(member.id) } }
+            .confirmationDialog("Remove this person?", isPresented: $showRemoveConfirmation) {
+                if let member = memberToRemove {
+                    Button("Remove access", role: .destructive) {
+                        memberToRemove = nil
+                        Task { _ = await store.removeFamilyMember(member.id) }
+                    }
+                }
                 Button("Cancel", role: .cancel) { }
-            } message: { member in
-                Text("Remove \(member.name) from this household? Their active sessions will be revoked, and this cannot be undone from the app.")
+            } message: {
+                Text(memberToRemove.map { "Remove \($0.name) from this household? Their active sessions will be revoked, and this cannot be undone from the app." } ?? "This person will lose access to the household.")
             }
-            .confirmationDialog("Archive this medication plan?", item: $planToArchive) { plan in
-                Button("Archive plan", role: .destructive) { Task { _ = await store.archiveMedicationPlan(plan) } }
+            .confirmationDialog("Archive this medication plan?", isPresented: $showArchiveConfirmation) {
+                if let plan = planToArchive {
+                    Button("Archive plan", role: .destructive) {
+                        planToArchive = nil
+                        Task { _ = await store.archiveMedicationPlan(plan) }
+                    }
+                }
                 Button("Cancel", role: .cancel) { }
-            } message: { plan in
-                Text("\(plan.name) will stop creating future reminders, while its history stays available.")
+            } message: {
+                Text(planToArchive.map { "\($0.name) will stop creating future reminders, while its history stays available." } ?? "This plan will stop creating future reminders, while its history stays available.")
             }
             .task { await store.refreshFamilyData() }
         }
@@ -70,7 +82,10 @@ struct FamilyView: View {
                         .contentShape(Rectangle())
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if canRemove(caregiver) {
-                                Button(role: .destructive) { memberToRemove = caregiver } label: {
+                                Button(role: .destructive) {
+                                    memberToRemove = caregiver
+                                    showRemoveConfirmation = true
+                                } label: {
                                     Label("Remove access", systemImage: "person.crop.circle.badge.minus")
                                 }
                             }
@@ -155,7 +170,10 @@ struct FamilyView: View {
                         .padding(.vertical, 12)
                         .contentShape(Rectangle())
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) { planToArchive = plan } label: { Label("Archive", systemImage: "archivebox") }
+                            Button(role: .destructive) {
+                                planToArchive = plan
+                                showArchiveConfirmation = true
+                            } label: { Label("Archive", systemImage: "archivebox") }
                         }
                         if plan.id != store.medicationPlans.last?.id { Divider().padding(.leading, 42) }
                     }

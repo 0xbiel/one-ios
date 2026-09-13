@@ -732,6 +732,28 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImagePoint": {
+        "properties": {
+          "x": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "ImagePoint",
+        "type": "object"
+      },
       "LiveKitTokenIn": {
         "properties": {
           "mode": {
@@ -773,6 +795,37 @@
           "map_data"
         ],
         "title": "MapIn",
+        "type": "object"
+      },
+      "MapScaleReferenceIn": {
+        "description": "One caregiver-supplied real-world reference for an RGB 2D map.",
+        "properties": {
+          "end": {
+            "$ref": "#/components/schemas/ImagePoint"
+          },
+          "label": {
+            "default": "Measured reference",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "length_m": {
+            "exclusiveMinimum": 0.05,
+            "maximum": 100.0,
+            "title": "Length M",
+            "type": "number"
+          },
+          "start": {
+            "$ref": "#/components/schemas/ImagePoint"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "length_m"
+        ],
+        "title": "MapScaleReferenceIn",
         "type": "object"
       },
       "MedicationCheckInIn": {
@@ -2110,6 +2163,51 @@
       }
     },
     "/api/v1/homes/{home_id}/cameras/{camera_id}": {
+      "delete": {
+        "description": "Disable a camera and revoke its publisher session.\n\nCamera records stay as an audit-safe tombstone so historical maps and\nobservations do not lose their camera reference. The device is no\nlonger returned to caregivers and its bearer session cannot publish a\nnew LiveKit token.",
+        "operationId": "camera_delete_api_v1_homes__home_id__cameras__camera_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "home_id",
+            "required": true,
+            "schema": {
+              "title": "Home Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "camera_id",
+            "required": true,
+            "schema": {
+              "title": "Camera Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Camera Delete"
+      },
       "patch": {
         "operationId": "camera_update_api_v1_homes__home_id__cameras__camera_id__patch",
         "parameters": [
@@ -3342,6 +3440,63 @@
           }
         },
         "summary": "Map Detail"
+      }
+    },
+    "/api/v1/homes/{home_id}/maps/{map_id}/scale": {
+      "post": {
+        "description": "Persist a scale derived from a caregiver-measured reference.\n\nRGB camera geometry remains image-space and approximate. This endpoint\nonly adds a measured conversion after a person supplies the physical\nlength of two points visible on that map; it never invents meters from\nthe camera sweep alone.",
+        "operationId": "measure_map_scale_api_v1_homes__home_id__maps__map_id__scale_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "home_id",
+            "required": true,
+            "schema": {
+              "title": "Home Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "map_id",
+            "required": true,
+            "schema": {
+              "title": "Map Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MapScaleReferenceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Measure Map Scale"
       }
     },
     "/api/v1/homes/{home_id}/maps/{map_id}/usdz": {
