@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import simd
 @testable import One
 
 @MainActor
@@ -165,6 +166,169 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(result.member.role, .primaryCaregiver)
         XCTAssertEqual(result.invalidatedSessions, 2)
     }
+
+    func testRoomPlanNormalizerCoversEveryElementTypeAndPreservesMetricTransform() throws {
+        var transform = matrix_identity_float4x4
+        transform.columns.3 = SIMD4<Float>(1.25, 2.5, -0.75, 1)
+        func element(_ category: String) -> RoomPlanElementInput {
+            RoomPlanElementInput(category: category, center: SIMD3(1.25, 2.5, -0.75), dimensions: SIMD3(2, 2.5, 3), transform: transform, vertices: [SIMD3(0, 0, 0), SIMD3(1, 0, 0)], attributes: category == "door" ? ["is_open=true"] : [])
+        }
+
+        let scan = try RoomPlanNormalizer.normalize(RoomPlanCaptureFixture(
+            roomID: UUID(), capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            walls: [element("wall")], floors: [element("floor")], openings: [element("opening")],
+            doors: [element("door")], windows: [element("window")], objects: [element("chair")],
+            sections: [RoomPlanSectionInput(label: "livingRoom", center: SIMD3(0, 0, 0), story: 0)]
+        ))
+
+        XCTAssertEqual(scan.schemaVersion, "roomplan-normalized.v1")
+        XCTAssertEqual(scan.producer, "native-ios")
+        XCTAssertEqual(scan.units, "m")
+        XCTAssertEqual(scan.upAxis, "Y")
+        XCTAssertEqual(scan.coordinateFrame, "roomplan-local")
+        XCTAssertEqual(scan.geometryType, "3d")
+        XCTAssertEqual(scan.walls.count, 1)
+        XCTAssertEqual(scan.floors.count, 1)
+        XCTAssertEqual(scan.openings.count, 1)
+        XCTAssertEqual(scan.doors.count, 1)
+        XCTAssertEqual(scan.windows.count, 1)
+        XCTAssertEqual(scan.objects.count, 1)
+        XCTAssertEqual(scan.sections.count, 1)
+        XCTAssertEqual(scan.walls[0].center, RoomPlanPoint3D(x: 1.25, y: 2.5, z: -0.75))
+        XCTAssertEqual(scan.walls[0].transform[0][3], 1.25)
+        XCTAssertEqual(scan.walls[0].dimensions, RoomPlanDimensions3D(x: 2, y: 2.5, z: 3))
+
+        let encoded = try JSONEncoder.one.encode(scan)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(json["schema_version"] as? String, "roomplan-normalized.v1")
+        XCTAssertEqual(json["geometry_type"] as? String, "3d")
+    }
+
+    func testRoomPlanNormalizerRejectsEmptyNonFiniteAndNonPositiveGeometry() {
+        XCTAssertThrowsError(try RoomPlanNormalizer.normalize(RoomPlanCaptureFixture())) { error in
+            XCTAssertEqual(error as? RoomPlanNormalizationError, .emptyCapture)
+        }
+
+        XCTAssertThrowsError(try RoomPlanNormalizer.normalize(RoomPlanCaptureFixture(objects: [RoomPlanElementInput(category: "chair", center: SIMD3(Float.nan, 0, 0), dimensions: SIMD3(repeating: 1))]))) { error in
+            XCTAssertEqual(error as? RoomPlanNormalizationError, .nonFiniteGeometry)
+        }
+
+        XCTAssertThrowsError(try RoomPlanNormalizer.normalize(RoomPlanCaptureFixture(walls: [RoomPlanElementInput(category: "wall", center: SIMD3(repeating: 0), dimensions: SIMD3(1, 0, 1))]))) { error in
+            XCTAssertEqual(error as? RoomPlanNormalizationError, .invalidDimensions)
+        }
+
+        var invalidTransform = matrix_identity_float4x4
+        invalidTransform.columns.0.x = .infinity
+        XCTAssertThrowsError(try RoomPlanNormalizer.normalize(RoomPlanCaptureFixture(floors: [RoomPlanElementInput(category: "floor", center: SIMD3(repeating: 0), dimensions: SIMD3(repeating: 1), transform: invalidTransform)]))) { error in
+            XCTAssertEqual(error as? RoomPlanNormalizationError, .nonFiniteGeometry)
+        }
+    }
+
+    func testRoomPlanMetadataAndCaptureErrorsStayNative() throws {
+        let metadata = RoomPlanScanMetadata(provenance: "native-roomplan", deviceModel: "iPhone17,1", lidar: true, roomplanVersion: "17", units: "m", upAxis: "Y", geometryType: "3d")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder.one.encode(metadata)) as? [String: Any])
+        XCTAssertEqual(json["provenance"] as? String, "native-roomplan")
+        XCTAssertEqual(json["lidar"] as? Bool, true)
+        XCTAssertEqual(json["units"] as? String, "m")
+        XCTAssertEqual(json["up_axis"] as? String, "Y")
+        XCTAssertEqual(RoomPlanCaptureError.unsupportedDevice.localizedDescription, "RoomPlan is not supported on this device.")
+    }
+
+    func testRoomPlanSceneRequiresExactValidated3DSource() throws {
+        let element = try RoomPlanElement(id: UUID().uuidString, category: "wall", confidence: "high", center: RoomPlanPoint3D(x: 0, y: 1, z: 0), dimensions: RoomPlanDimensions3D(x: 1, y: 2, z: 0.1), transform: [[1, 0, 0, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]])
+        let geometry = try RoomPlanNormalizedScan(roomID: UUID(), capturedAt: Date(), walls: [element], floors: [], openings: [], doors: [], windows: [], objects: [], sections: [])
+        let valid = SceneDescriptor(sceneID: UUID(), mapID: UUID(), version: 1, dimension: .threeD, source: .roomplanLidar3D, provenance: "roomplan-lidar-3d", approximate: false, metricScaleKnown: true, geometryStatus: "ready", rescanRequired: false, coordinateFrame: "roomplan-local", geometry: geometry, usdz: nil)
+        let generic = SceneDescriptor(sceneID: valid.sceneID, mapID: valid.mapID, version: 1, dimension: .threeD, source: .legacy2D, provenance: "legacy-2d", approximate: true, metricScaleKnown: false, geometryStatus: "ready", rescanRequired: false, coordinateFrame: nil, geometry: geometry, usdz: nil)
+        XCTAssertTrue(valid.isRenderable3D)
+        XCTAssertFalse(generic.isRenderable3D)
+    }
+
+    func testRoomPlanSceneDecodesNativeBackendGeometryAndAttachment() throws {
+        let element = try RoomPlanElement(id: UUID().uuidString, category: "floor", confidence: "high", center: RoomPlanPoint3D(x: 0, y: 0, z: 0), dimensions: RoomPlanDimensions3D(x: 2, y: 0.1, z: 2), transform: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        let geometry = try RoomPlanNormalizedScan(roomID: UUID(), capturedAt: Date(), walls: [], floors: [element], openings: [], doors: [], windows: [], objects: [], sections: [])
+        let geometryJSON = try JSONSerialization.jsonObject(with: JSONEncoder.one.encode(geometry))
+        let payload: [String: Any] = [
+            "sceneId": UUID().uuidString,
+            "mapId": UUID().uuidString,
+            "version": 4,
+            "source": "roomplan-lidar-3d",
+            "dimension": "3d",
+            "provenance": "roomplan-lidar-3d",
+            "approximate": false,
+            "metricScaleKnown": true,
+            "geometryStatus": "ready",
+            "rescanRequired": false,
+            "coordinateFrame": "roomplan-local",
+            "canonicalGeometry": geometryJSON,
+            "geometry": geometryJSON,
+            "usdz": [
+                "available": true,
+                "sha256": "abc",
+                "bytes": 4,
+                "content_type": "model/vnd.usdz+zip",
+                "download_path": "/api/v1/homes/home/maps/map/usdz"
+            ]
+        ]
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(SceneDescriptor.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertTrue(decoded.isRenderable3D)
+        XCTAssertTrue(decoded.hasReadyUSDZ)
+        XCTAssertEqual(decoded.geometry?.floors.first?.dimensions.x, 2)
+        XCTAssertEqual(decoded.usdz?.contentType, "model/vnd.usdz+zip")
+    }
+
+    func testRoomPlanClientUsesExactNativeRoutesAndMetadata() async throws {
+        let homeID = UUID()
+        let mapID = UUID()
+        let roomID = UUID()
+        let element = try RoomPlanElement(id: UUID().uuidString, category: "floor", confidence: "high", center: RoomPlanPoint3D(x: 0, y: 0, z: 0), dimensions: RoomPlanDimensions3D(x: 2, y: 0.1, z: 2), transform: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        let scan = try RoomPlanNormalizedScan(roomID: roomID, capturedAt: Date(), walls: [], floors: [element], openings: [], doors: [], windows: [], objects: [], sections: [])
+        let metadata = RoomPlanScanMetadata(provenance: "native-roomplan", deviceModel: "iPhone17,1", lidar: true, roomplanVersion: "17", units: "m", upAxis: "Y", geometryType: "3d")
+        var requests: [URLRequest] = []
+        OneURLProtocolStub.handler = { request in
+            requests.append(request)
+            if request.httpMethod == "POST" {
+                let body = "{\"id\":\"\(mapID.uuidString)\",\"revision\":2,\"coordinate_frame\":\"roomplan-local\",\"source\":\"roomplan-lidar-3d\",\"dimension\":\"3d\",\"usdz\":null}".data(using: .utf8)!
+                return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+            }
+            if request.httpMethod == "PUT" {
+                let body = "{\"map_id\":\"\(mapID.uuidString)\",\"source\":\"roomplan-lidar-3d\",\"dimension\":\"3d\",\"usdz\":{\"available\":true,\"sha256\":\"abc\",\"bytes\":4,\"content_type\":\"model/vnd.usdz+zip\",\"download_path\":\"/api/v1/...\"}}".data(using: .utf8)!
+                return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+            }
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), Data([0x50, 0x4B]))
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        let uploaded = try await client.uploadRoomPlan(roomID: roomID, scan: scan, metadata: metadata)
+        XCTAssertEqual(uploaded.mapID, mapID)
+        XCTAssertEqual(requests[0].httpMethod, "POST")
+        XCTAssertEqual(requests[0].url?.path, "/api/v1/homes/\(homeID.uuidString)/maps/roomplan")
+        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "X-ONE-Client"), "native-ios-roomplan")
+        let body = try XCTUnwrap(requestBody(requests[0]))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual((payload["scan_metadata"] as? [String: Any])?["provenance"] as? String, "native-roomplan")
+        XCTAssertEqual((payload["scan_metadata"] as? [String: Any])?["lidar"] as? Bool, true)
+
+        let attachment = try await client.uploadRoomPlanUSDZ(mapID: mapID, data: Data([1, 2, 3, 4]))
+        XCTAssertEqual(attachment.mapID, mapID)
+        XCTAssertEqual(requests[1].httpMethod, "PUT")
+        XCTAssertEqual(requests[1].url?.path, "/api/v1/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz")
+        XCTAssertEqual(requests[1].value(forHTTPHeaderField: "Content-Type"), "model/vnd.usdz+zip")
+        XCTAssertEqual(requestBody(requests[1]), Data([1, 2, 3, 4]))
+        let downloaded = try await client.downloadRoomPlanUSDZ(mapID: mapID)
+        XCTAssertEqual(downloaded, Data([0x50, 0x4B]))
+        XCTAssertEqual(requests[2].httpMethod, "GET")
+        XCTAssertEqual(requests[2].url?.path, "/api/v1/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz")
+    }
+
+    #if targetEnvironment(simulator)
+    func testRoomPlanCapabilityIsDisabledOnSimulator() {
+        XCTAssertFalse(RoomPlanCapability.isSupported)
+    }
+    #endif
 }
 
 private final class OneURLProtocolStub: URLProtocol, @unchecked Sendable {

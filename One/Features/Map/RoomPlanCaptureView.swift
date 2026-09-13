@@ -1,9 +1,22 @@
 import SwiftUI
 import RoomPlan
+import ARKit
+
+enum RoomPlanCaptureError: LocalizedError, Sendable, Equatable {
+    case unsupportedDevice
+    case captureFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedDevice: "RoomPlan is not supported on this device."
+        case let .captureFailed(message): message
+        }
+    }
+}
 
 struct RoomPlanCaptureView: UIViewRepresentable {
     @Binding var isCapturing: Bool
-    var onComplete: @MainActor @Sendable (CapturedRoom?) -> Void
+    var onComplete: @MainActor @Sendable (Result<CapturedRoom, RoomPlanCaptureError>) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onComplete: onComplete) }
 
@@ -25,16 +38,24 @@ struct RoomPlanCaptureView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, RoomCaptureSessionDelegate {
-        let onComplete: @MainActor @Sendable (CapturedRoom?) -> Void
+        let onComplete: @MainActor @Sendable (Result<CapturedRoom, RoomPlanCaptureError>) -> Void
         var hasStarted = false
-        init(onComplete: @escaping @MainActor @Sendable (CapturedRoom?) -> Void) { self.onComplete = onComplete }
+        init(onComplete: @escaping @MainActor @Sendable (Result<CapturedRoom, RoomPlanCaptureError>) -> Void) { self.onComplete = onComplete }
 
         func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
             let completion = onComplete
             let capturedData = data
             Task { @MainActor in
-                guard error == nil else { completion(nil); return }
-                completion(try? await RoomBuilder(options: []).capturedRoom(from: capturedData))
+                if let error {
+                    completion(.failure(.captureFailed(error.localizedDescription)))
+                    return
+                }
+                do {
+                    let room = try await RoomBuilder(options: []).capturedRoom(from: capturedData)
+                    completion(.success(room))
+                } catch {
+                    completion(.failure(.captureFailed(error.localizedDescription)))
+                }
             }
         }
     }
@@ -45,7 +66,7 @@ enum RoomPlanCapability {
         #if targetEnvironment(simulator)
         false
         #else
-        RoomCaptureSession.isSupported
+        RoomCaptureSession.isSupported && ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)
         #endif
     }
 }

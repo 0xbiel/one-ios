@@ -97,6 +97,59 @@ struct MedicationPlanUpdateRequest: Codable, Sendable {
 }
 struct LiveKitTokenResponse: Codable, Sendable { let websocketURL: URL; let token: String; let roomName: String; let expiresAt: Date }
 struct ArtifactUploadResponse: Codable, Sendable { let artifactID: UUID; let sha256: String; let expiresAt: Date? }
+struct RoomPlanUploadRequest: Codable, Sendable {
+    let roomID: UUID?
+    let normalizedScan: RoomPlanNormalizedScan
+    let scanMetadata: RoomPlanScanMetadata
+}
+struct RoomPlanMapUploadResponse: Decodable, Sendable, Equatable {
+    let mapID: UUID
+    let revision: Int
+    let source: MapSource
+    let dimension: MapDimension
+    let coordinateFrame: String?
+    let usdz: USDZAsset?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, mapID = "map_id", revision, source, dimension
+        case coordinateFrame = "coordinate_frame", usdz
+    }
+
+    init(mapID: UUID, revision: Int = 0, source: MapSource = .roomplanLidar3D, dimension: MapDimension = .threeD, coordinateFrame: String? = "roomplan-local", usdz: USDZAsset? = nil) {
+        self.mapID = mapID; self.revision = revision; self.source = source; self.dimension = dimension; self.coordinateFrame = coordinateFrame; self.usdz = usdz
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? container.decode(UUID.self, forKey: .mapID)
+        mapID = id
+        revision = try container.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+        source = (try? container.decode(MapSource.self, forKey: .source)) ?? .legacy2D
+        dimension = (try? container.decode(MapDimension.self, forKey: .dimension)) ?? .twoD
+        coordinateFrame = try container.decodeIfPresent(String.self, forKey: .coordinateFrame)
+        usdz = try container.decodeIfPresent(USDZAsset.self, forKey: .usdz)
+    }
+}
+struct USDZUploadResponse: Decodable, Sendable, Equatable {
+    let mapID: UUID
+    let source: MapSource
+    let dimension: MapDimension
+    let usdz: USDZAsset?
+
+    private enum CodingKeys: String, CodingKey { case mapID = "map_id", source, dimension, usdz }
+
+    init(mapID: UUID, source: MapSource = .roomplanLidar3D, dimension: MapDimension = .threeD, usdz: USDZAsset? = nil) {
+        self.mapID = mapID; self.source = source; self.dimension = dimension; self.usdz = usdz
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mapID = try container.decode(UUID.self, forKey: .mapID)
+        source = (try? container.decode(MapSource.self, forKey: .source)) ?? .legacy2D
+        dimension = (try? container.decode(MapDimension.self, forKey: .dimension)) ?? .twoD
+        usdz = try container.decodeIfPresent(USDZAsset.self, forKey: .usdz)
+    }
+}
 struct DataRequestResponse: Codable, Sendable { let requestID: UUID; let status: String }
 struct BackendHealthResponse: Codable, Sendable { let status: String; let database: String?; let localInferenceModel: String? }
 
@@ -152,6 +205,10 @@ protocol OneAPIClient: Sendable {
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws
     func logout() async throws
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
+    func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse
+    func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse
+    func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data
+    func refreshScene(homeID: UUID) async throws -> SceneDescriptor
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse
     func requestExport() async throws -> DataRequestResponse
     func requestDeletion() async throws -> DataRequestResponse
@@ -184,6 +241,10 @@ struct MockOneAPIClient: OneAPIClient {
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws { }
     func logout() async throws { }
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
+    func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID()) }
+    func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse { USDZUploadResponse(mapID: mapID, usdz: USDZAsset(available: true, sha256: "local-demo", bytes: data.count, contentType: "model/vnd.usdz+zip", downloadPath: nil)) }
+    func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data { Data() }
+    func refreshScene(homeID: UUID) async throws -> SceneDescriptor { .empty }
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse { LiveKitTokenResponse(websocketURL: URL(string: "wss://lan.invalid")!, token: "demo-token", roomName: "one-demo", expiresAt: Date().addingTimeInterval(300)) }
     func requestExport() async throws -> DataRequestResponse { DataRequestResponse(requestID: UUID(), status: "queued") }
     func requestDeletion() async throws -> DataRequestResponse { DataRequestResponse(requestID: UUID(), status: "queued") }
@@ -355,6 +416,28 @@ struct HTTPOneAPIClient: OneAPIClient {
         return ArtifactUploadResponse(artifactID: UUID(uuidString: response.id) ?? UUID(), sha256: digest, expiresAt: nil)
     }
 
+    func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse {
+        guard let homeID else { throw OneAPIError.missingSession }
+        let body = try JSONEncoder.one.encode(RoomPlanUploadRequest(roomID: roomID, normalizedScan: scan, scanMetadata: metadata))
+        return try await send(path: "/homes/\(homeID.uuidString)/maps/roomplan", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
+    }
+
+    func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse {
+        guard let homeID else { throw OneAPIError.missingSession }
+        let response: BackendUSDZUploadResponse = try await send(path: "/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz", method: "PUT", body: data, requiresSession: true, headers: ["Content-Type": "model/vnd.usdz+zip", "X-ONE-Client": "native-ios-roomplan", "X-ONE-Idempotency-Key": mapID.uuidString])
+        guard let responseMapID = UUID(uuidString: response.mapId) else { throw OneAPIError.invalidResponse }
+        return USDZUploadResponse(mapID: responseMapID, source: MapSource(rawValue: response.source) ?? .legacy2D, dimension: MapDimension(rawValue: response.dimension) ?? .twoD, usdz: response.usdz)
+    }
+
+    func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data {
+        guard let homeID else { throw OneAPIError.missingSession }
+        return try await sendRaw(path: "/homes/\(homeID.uuidString)/maps/\(mapID.uuidString)/usdz", method: "GET", body: nil, requiresSession: true, headers: [:])
+    }
+
+    func refreshScene(homeID: UUID) async throws -> SceneDescriptor {
+        try await send(path: "/homes/\(homeID.uuidString)/scene", method: "GET", body: nil, requiresSession: true)
+    }
+
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse {
         guard let homeID else { throw OneAPIError.missingSession }
         let body = try JSONSerialization.data(withJSONObject: ["mode": "subscribe"])
@@ -396,6 +479,21 @@ struct HTTPOneAPIClient: OneAPIClient {
         try await sendRequest(url: url, method: method, body: body, requiresSession: requiresSession, headers: [:])
     }
 
+    private func sendRaw(path: String, method: String, body: Data?, requiresSession: Bool, headers: [String: String]) async throws -> Data {
+        if requiresSession && (accessToken == nil || homeID == nil) { throw OneAPIError.missingSession }
+        var request = URLRequest(url: baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))))
+        request.httpMethod = method; request.httpBody = body
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        if let accessToken { request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization") }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OneAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONDecoder.one.decode(APIProblem.self, from: data).message) ?? "The ONE API request failed."
+            throw OneAPIError.server(status: http.statusCode, message: message)
+        }
+        return data
+    }
+
     private func sendRequest<T: Decodable>(url: URL, method: String, body: Data?, requiresSession: Bool, headers: [String: String]) async throws -> T {
         if requiresSession && (accessToken == nil || homeID == nil) { throw OneAPIError.missingSession }
         var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = body; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -423,6 +521,7 @@ private struct BackendActor: Decodable { let role: String }
 private struct BackendConsentResponse: Decodable { let id: String? }
 private struct BackendIDResponse: Decodable { let id: String }
 private struct BackendMapUploadResponse: Decodable { let id: String; let revision: Int? }
+private struct BackendUSDZUploadResponse: Decodable { let mapId: String; let source: String; let dimension: String; let usdz: USDZAsset? }
 private struct BackendLiveKitResponse: Decodable { let url: String; let token: String; let expiresIn: Int }
 private struct BackendExportResponse: Decodable { let homeID: String }
 private struct BackendDeletionResponse: Decodable { let requestID: String; let status: String }

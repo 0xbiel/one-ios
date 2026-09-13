@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import RoomPlan
 
 @MainActor
 @Observable
@@ -33,8 +34,16 @@ final class AppStore {
     var selectedMedicationDate = Date()
     var inviteCode: String?
     var mapUploadResult: ArtifactUploadResponse?
+    var scene: SceneDescriptor = .empty
+    var roomPlanModelURL: URL?
+    var isRoomPlanUploading = false
+    var isRoomPlanModelLoading = false
+    var roomPlanModelError: String?
     var careRecipients: [CareRecipient] = []
     var cameraCount = 0
+    private var pendingRoomPlanMapID: UUID?
+    private var pendingRoomPlanUSDZData: Data?
+    private var roomPlanModelMapID: UUID?
     private let sessionStore: any SessionKeyStore
     let runtimeConfiguration: RuntimeConfiguration
 
@@ -265,7 +274,114 @@ final class AppStore {
             scan = RoomScan(id: scan.id, schemaVersion: scan.schemaVersion, capturedAt: scan.capturedAt, units: scan.units, upAxis: scan.upAxis, objects: objects, zones: scan.zones, artifactHash: scan.artifactHash, exportedUSDZName: scan.exportedUSDZName)
         } catch { scan = .empty }
         do { cameraCount = try await apiClient.cameraCount(homeID: session.homeID) } catch { cameraCount = 0 }
+        await refreshScene()
         await refreshFamilyData()
+    }
+
+    func refreshScene() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do {
+            scene = try await apiClient.refreshScene(homeID: session.homeID)
+            if scene.isRenderable3D {
+                await loadRoomPlanModelIfAvailable()
+            } else {
+                roomPlanModelURL = nil
+                roomPlanModelMapID = nil
+                roomPlanModelError = nil
+            }
+        } catch {
+            // Keep the last known scene if a refresh is temporarily unavailable.
+            if scene == .empty { roomPlanModelError = "The home scene is not available yet." }
+        }
+    }
+
+    func uploadRoomPlan(_ capturedRoom: CapturedRoom) async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        guard RoomPlanCapability.isSupported else {
+            authError = RoomPlanCaptureError.unsupportedDevice.localizedDescription
+            return
+        }
+
+        isRoomPlanUploading = true
+        authError = nil
+        roomPlanModelError = nil
+        var uploadedMapID: UUID?
+        var artifactData: Data?
+        defer { isRoomPlanUploading = false }
+
+        do {
+            let artifact = try RoomPlanArtifactBuilder.build(from: capturedRoom)
+            artifactData = artifact.usdzData
+            let map = try await apiClient.uploadRoomPlan(roomID: nil, scan: artifact.scan, metadata: artifact.metadata)
+            uploadedMapID = map.mapID
+            pendingRoomPlanMapID = map.mapID
+            pendingRoomPlanUSDZData = artifact.usdzData
+            let attachment = try await apiClient.uploadRoomPlanUSDZ(mapID: map.mapID, data: artifact.usdzData)
+            pendingRoomPlanMapID = nil
+            pendingRoomPlanUSDZData = nil
+            mapUploadResult = ArtifactUploadResponse(artifactID: map.mapID, sha256: attachment.usdz?.sha256 ?? "", expiresAt: nil)
+            try cacheRoomPlanModel(mapID: map.mapID, data: artifact.usdzData)
+            scene = try await apiClient.refreshScene(homeID: session.homeID)
+            roomPlanModelError = scene.isRenderable3D ? nil : "The uploaded scan is not ready to display yet."
+        } catch {
+            if let uploadedMapID, let artifactData {
+                pendingRoomPlanMapID = uploadedMapID
+                pendingRoomPlanUSDZData = artifactData
+                if let refreshed = try? await apiClient.refreshScene(homeID: session.homeID) {
+                    scene = refreshed
+                    roomPlanModelError = "The 3D asset could not be attached. Tap retry to upload it again."
+                }
+            }
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the native room scan."
+        }
+    }
+
+    func retryRoomPlanModel() async {
+        if let mapID = pendingRoomPlanMapID, let data = pendingRoomPlanUSDZData {
+            do {
+                let attachment = try await apiClient.uploadRoomPlanUSDZ(mapID: mapID, data: data)
+                pendingRoomPlanMapID = nil
+                pendingRoomPlanUSDZData = nil
+                mapUploadResult = ArtifactUploadResponse(artifactID: mapID, sha256: attachment.usdz?.sha256 ?? "", expiresAt: nil)
+                try cacheRoomPlanModel(mapID: mapID, data: data)
+                await refreshScene()
+                authError = nil
+                return
+            } catch {
+                authError = (error as? LocalizedError)?.errorDescription ?? "Could not attach the 3D asset."
+            }
+        }
+        await refreshScene()
+    }
+
+    private func loadRoomPlanModelIfAvailable() async {
+        guard scene.isRenderable3D, let mapID = scene.mapID else { return }
+        if roomPlanModelMapID == mapID,
+           let roomPlanModelURL,
+           FileManager.default.fileExists(atPath: roomPlanModelURL.path) { return }
+        roomPlanModelURL = nil
+        roomPlanModelMapID = nil
+        guard scene.usdz?.available == true else {
+            roomPlanModelError = "3D geometry is ready, but its USDZ asset is not available yet."
+            return
+        }
+        isRoomPlanModelLoading = true
+        defer { isRoomPlanModelLoading = false }
+        do {
+            let data = try await apiClient.downloadRoomPlanUSDZ(mapID: mapID)
+            try cacheRoomPlanModel(mapID: mapID, data: data)
+            roomPlanModelError = nil
+        } catch {
+            roomPlanModelError = "The 3D asset could not be downloaded. Tap retry to try again."
+        }
+    }
+
+    private func cacheRoomPlanModel(mapID: UUID, data: Data) throws {
+        guard !data.isEmpty else { throw RoomPlanNormalizationError.exportFailed }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("one-roomplan-\(mapID.uuidString).usdz")
+        try data.write(to: url, options: [.atomic])
+        roomPlanModelURL = url
+        roomPlanModelMapID = mapID
     }
 
     func createFamilyInvite(name: String, email: String?) async {
@@ -390,6 +506,8 @@ final class AppStore {
     }
 
     func uploadCurrentMap() async {
+        // This compatibility method is intentionally the legacy 2D route.
+        // Native RoomPlan scans use uploadRoomPlan(_:), never this endpoint.
         guard !runtimeConfiguration.isDemoMode, session != nil else { return }
         do { mapUploadResult = try await apiClient.uploadRoomScan(roomID: scan.id, normalizedJSON: JSONEncoder.one.encode(scan), usdz: nil) }
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the room map." }
@@ -400,6 +518,12 @@ final class AppStore {
             try? sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
             events = []
             scan = .empty
+            scene = .empty
+            roomPlanModelURL = nil
+            roomPlanModelMapID = nil
+            roomPlanModelError = nil
+            pendingRoomPlanMapID = nil
+            pendingRoomPlanUSDZData = nil
             consents = []
             caregivers = []
             careRecipients = []
@@ -440,6 +564,12 @@ final class AppStore {
             if !runtimeConfiguration.isDemoMode {
                 events = []
                 scan = .empty
+                scene = .empty
+                roomPlanModelURL = nil
+                roomPlanModelMapID = nil
+                roomPlanModelError = nil
+                pendingRoomPlanMapID = nil
+                pendingRoomPlanUSDZData = nil
                 consents = []
                 caregivers = []
                 careRecipients = []

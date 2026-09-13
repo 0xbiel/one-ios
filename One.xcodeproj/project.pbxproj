@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		13E893E336E0BAD95E145068 /* RoomPlanPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */; };
 		14589C3B92BF0F25E33B5D5B /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC0A5231CEB851F1933D6E8 /* HomeView.swift */; };
 		14E12DA5BDC4760F05D58E4D /* OneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B8EAD036BB929430BC85C2 /* OneTests.swift */; };
 		20888E946549B06C96BDBDAF /* RoomPlanCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */; };
@@ -18,6 +19,7 @@
 		594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515046F62BFD6A039EDDBA3E /* OneTheme.swift */; };
 		5C908252132EEB61769D2975 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */; };
 		6AA42C3DB98D0BE3DD90E4EB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DD033E4F49D68C4D705B75 /* RootView.swift */; };
+		6B87F57BC95FD12C75A8E1B5 /* RoomPlanUSDZView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A92FBAC0357CF0BE5D82DED /* RoomPlanUSDZView.swift */; };
 		7398769CF793D626F08D4E6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09509CA5012A8E0B3BD17AA4 /* Models.swift */; };
 		8D05E58E224E873F738534A9 /* BackendContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102E67084C9F650302C0E8E7 /* BackendContracts.swift */; };
 		9BF68963ED6A0F9F06E97D73 /* AssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A3257A3830A3C495984167 /* AssistantView.swift */; };
@@ -51,12 +53,14 @@
 		50091C923FDB2EC458E7C045 /* One.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = One.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		515046F62BFD6A039EDDBA3E /* OneTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneTheme.swift; sourceTree = "<group>"; };
 		58DD033E4F49D68C4D705B75 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		5A92FBAC0357CF0BE5D82DED /* RoomPlanUSDZView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanUSDZView.swift; sourceTree = "<group>"; };
 		6BE6BA9D01FF21154D6C041A /* Services.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services.swift; sourceTree = "<group>"; };
 		6D019DBF69CF28A1719FBA71 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		752F610BAFB0F25DFCEAD4F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AA911D865B440547A2701529 /* MapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapView.swift; sourceTree = "<group>"; };
 		B520B423F23BD2037C9C90E9 /* OneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneApp.swift; sourceTree = "<group>"; };
 		D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanPayload.swift; sourceTree = "<group>"; };
 		D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanCaptureView.swift; sourceTree = "<group>"; };
 		D1A3257A3830A3C495984167 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
 		E7EDBB883AFAF5A7F0A85739 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
@@ -85,6 +89,7 @@
 			children = (
 				3258FB4BA3A03E6E5B41113A /* DesignSystem */,
 				6190EA45773CEFB517B4FDC8 /* Networking */,
+				83FC05A1AAF9B9A1DE89E79F /* RoomPlan */,
 				ECD6062189E1E13F4ED0F437 /* Utilities */,
 			);
 			path = Core;
@@ -168,6 +173,14 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
+		83FC05A1AAF9B9A1DE89E79F /* RoomPlan */ = {
+			isa = PBXGroup;
+			children = (
+				CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */,
+			);
+			path = RoomPlan;
+			sourceTree = "<group>";
+		};
 		8EC650B74198568B9ECDA582 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -198,6 +211,7 @@
 			children = (
 				AA911D865B440547A2701529 /* MapView.swift */,
 				D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */,
+				5A92FBAC0357CF0BE5D82DED /* RoomPlanUSDZView.swift */,
 			);
 			path = Map;
 			sourceTree = "<group>";
@@ -334,6 +348,8 @@
 				D578CF1E50B4233904A442F8 /* OneApp.swift in Sources */,
 				594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */,
 				20888E946549B06C96BDBDAF /* RoomPlanCaptureView.swift in Sources */,
+				13E893E336E0BAD95E145068 /* RoomPlanPayload.swift in Sources */,
+				6B87F57BC95FD12C75A8E1B5 /* RoomPlanUSDZView.swift in Sources */,
 				6AA42C3DB98D0BE3DD90E4EB /* RootView.swift in Sources */,
 				FAC75D544B6871D4A568DAEE /* Services.swift in Sources */,
 				BC427E75A868B2308FA2D89B /* SettingsView.swift in Sources */,
@@ -430,6 +446,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NMX68HLH7T;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
@@ -437,7 +455,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				ONE_API_BASE_URL = "http://127.0.0.1:8000/api/v1";
+				ONE_API_BASE_URL = "https://biels-macbook-pro.taild34b3f.ts.net/api/v1";
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xbiel.one;
 				SDKROOT = iphoneos;
@@ -467,6 +485,8 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NMX68HLH7T;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
@@ -474,7 +494,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				ONE_API_BASE_URL = "http://127.0.0.1:8000/api/v1";
+				ONE_API_BASE_URL = "https://biels-macbook-pro.taild34b3f.ts.net/api/v1";
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xbiel.one;
 				SDKROOT = iphoneos;

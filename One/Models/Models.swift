@@ -126,6 +126,95 @@ extension RoomScan {
     }
 }
 
+enum MapSource: String, Codable, Sendable {
+    case cameraCV2D = "camera-cv-2d"
+    case roomplanLidar3D = "roomplan-lidar-3d"
+    case legacy2D = "legacy-2d"
+}
+
+enum MapDimension: String, Codable, Sendable {
+    case twoD = "2d"
+    case threeD = "3d"
+}
+
+struct USDZAsset: Codable, Sendable, Equatable {
+    let available: Bool
+    let sha256: String?
+    let bytes: Int?
+    let contentType: String?
+    let downloadPath: String?
+}
+
+struct SceneDescriptor: Decodable, Sendable, Equatable {
+    let sceneID: UUID?
+    let mapID: UUID?
+    let version: Int
+    let dimension: MapDimension
+    let source: MapSource
+    let provenance: String
+    let approximate: Bool
+    let metricScaleKnown: Bool
+    let geometryStatus: String
+    let rescanRequired: Bool
+    let coordinateFrame: String?
+    let canonicalGeometry: RoomPlanNormalizedScan?
+    let geometry: RoomPlanNormalizedScan?
+    let usdz: USDZAsset?
+
+    var isRenderable3D: Bool {
+        source == .roomplanLidar3D && dimension == .threeD && geometryStatus == "ready" && canonicalGeometry != nil
+    }
+
+    var hasReadyUSDZ: Bool { isRenderable3D && usdz?.available == true }
+
+    static var empty: SceneDescriptor {
+        SceneDescriptor(sceneID: nil, mapID: nil, version: 0, dimension: .twoD, source: .legacy2D, provenance: "legacy-2d", approximate: true, metricScaleKnown: false, geometryStatus: "empty", rescanRequired: true, coordinateFrame: nil, geometry: nil, usdz: nil)
+    }
+
+    init(sceneID: UUID?, mapID: UUID?, version: Int, dimension: MapDimension, source: MapSource, provenance: String, approximate: Bool, metricScaleKnown: Bool, geometryStatus: String, rescanRequired: Bool, coordinateFrame: String?, geometry: RoomPlanNormalizedScan?, usdz: USDZAsset?) {
+        self.sceneID = sceneID
+        self.mapID = mapID
+        self.version = version
+        self.dimension = dimension
+        self.source = source
+        self.provenance = provenance
+        self.approximate = approximate
+        self.metricScaleKnown = metricScaleKnown
+        self.geometryStatus = geometryStatus
+        self.rescanRequired = rescanRequired
+        self.coordinateFrame = coordinateFrame
+        self.canonicalGeometry = geometry
+        self.geometry = geometry
+        self.usdz = usdz
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sceneID = "sceneId"
+        case mapID = "mapId"
+        case version, dimension, source, provenance, approximate
+        case metricScaleKnown, geometryStatus, rescanRequired
+        case coordinateFrame, canonicalGeometry, geometry, usdz
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sceneID = try container.decodeIfPresent(UUID.self, forKey: .sceneID)
+        mapID = try container.decodeIfPresent(UUID.self, forKey: .mapID)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 0
+        dimension = (try? container.decode(MapDimension.self, forKey: .dimension)) ?? .twoD
+        source = (try? container.decode(MapSource.self, forKey: .source)) ?? .legacy2D
+        provenance = try container.decodeIfPresent(String.self, forKey: .provenance) ?? source.rawValue
+        approximate = try container.decodeIfPresent(Bool.self, forKey: .approximate) ?? true
+        metricScaleKnown = try container.decodeIfPresent(Bool.self, forKey: .metricScaleKnown) ?? false
+        geometryStatus = try container.decodeIfPresent(String.self, forKey: .geometryStatus) ?? "empty"
+        rescanRequired = try container.decodeIfPresent(Bool.self, forKey: .rescanRequired) ?? false
+        coordinateFrame = try container.decodeIfPresent(String.self, forKey: .coordinateFrame)
+        canonicalGeometry = try? container.decode(RoomPlanNormalizedScan.self, forKey: .canonicalGeometry)
+        geometry = canonicalGeometry ?? (try? container.decode(RoomPlanNormalizedScan.self, forKey: .geometry))
+        usdz = try container.decodeIfPresent(USDZAsset.self, forKey: .usdz)
+    }
+}
+
 struct MapPin: Identifiable, Sendable {
     let id: UUID
     let title: String
