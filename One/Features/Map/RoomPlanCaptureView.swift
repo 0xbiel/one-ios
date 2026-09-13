@@ -28,9 +28,9 @@ struct RoomPlanVisualSample: Sendable {
     let jpegData: Data
     let width: Int
     let height: Int
-    let depthData: Data
-    let depthWidth: Int
-    let depthHeight: Int
+    let depthData: Data?
+    let depthWidth: Int?
+    let depthHeight: Int?
     let intrinsics: [[Double]]
     let cameraToWorld: [[Double]]
     let capturedAt: Date
@@ -74,30 +74,31 @@ struct RoomPlanCaptureView: UIViewRepresentable {
         let onComplete: @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void
         var hasStarted = false
         var hasStopped = false
-        private var visualSamplingTimer: Timer?
         private var visualSamples: [RoomPlanVisualSample] = []
+        private var lastVisualSampleTimestamp: TimeInterval?
         private let imageContext = CIContext(options: [.cacheIntermediates: false])
         private let maxVisualSamples = 10
+        private let visualSampleInterval: TimeInterval = 0.8
         init(onComplete: @escaping @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void) { self.onComplete = onComplete }
 
         func beginVisualSampling(session: RoomCaptureSession) {
             stopVisualSampling()
-            visualSamplingTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self, weak session] _ in
-                guard let self, let session else { return }
-                self.captureVisualSample(from: session.arSession.currentFrame)
-            }
+            visualSamples.removeAll(keepingCapacity: true)
+            lastVisualSampleTimestamp = nil
             if let frame = session.arSession.currentFrame { captureVisualSample(from: frame) }
         }
 
         func stopVisualSampling() {
-            visualSamplingTimer?.invalidate()
-            visualSamplingTimer = nil
+            lastVisualSampleTimestamp = nil
         }
 
         private func captureVisualSample(from frame: ARFrame?) {
             guard visualSamples.count < maxVisualSamples, let frame else { return }
             guard case .normal = frame.camera.trackingState else { return }
-            guard let sceneDepth = frame.smoothedSceneDepth ?? frame.sceneDepth else { return }
+            if let lastVisualSampleTimestamp,
+               frame.timestamp - lastVisualSampleTimestamp < visualSampleInterval {
+                return
+            }
             let capturedImage = frame.capturedImage
             let sourceWidth = CVPixelBufferGetWidth(capturedImage)
             let sourceHeight = CVPixelBufferGetHeight(capturedImage)
@@ -110,7 +111,8 @@ struct RoomPlanCaptureView: UIViewRepresentable {
             let image = CIImage(cvPixelBuffer: capturedImage).transformed(by: CGAffineTransform(scaleX: scale, y: scale))
             guard let cgImage = imageContext.createCGImage(image, from: image.extent) else { return }
             guard let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.64) else { return }
-            guard let depthData = Self.float32DepthData(sceneDepth.depthMap) else { return }
+            let sceneDepth = frame.smoothedSceneDepth ?? frame.sceneDepth
+            let depthData = sceneDepth.flatMap { Self.float32DepthData($0.depthMap) }
 
             let cameraIntrinsics = frame.camera.intrinsics
             let sx = Double(outputWidth) / Double(sourceWidth)
@@ -127,13 +129,14 @@ struct RoomPlanCaptureView: UIViewRepresentable {
                     width: outputWidth,
                     height: outputHeight,
                     depthData: depthData,
-                    depthWidth: CVPixelBufferGetWidth(sceneDepth.depthMap),
-                    depthHeight: CVPixelBufferGetHeight(sceneDepth.depthMap),
+                    depthWidth: sceneDepth.map { CVPixelBufferGetWidth($0.depthMap) },
+                    depthHeight: sceneDepth.map { CVPixelBufferGetHeight($0.depthMap) },
                     intrinsics: intrinsics,
                     cameraToWorld: cameraToWorld,
                     capturedAt: frame.timestamp > 0 ? Date(timeIntervalSinceNow: 0) : Date()
                 )
             )
+            lastVisualSampleTimestamp = frame.timestamp
         }
 
         private static func float32DepthData(_ pixelBuffer: CVPixelBuffer) -> Data? {
@@ -182,6 +185,10 @@ struct RoomPlanCaptureView: UIViewRepresentable {
                     completion(.failure(.captureFailed(error.localizedDescription)))
                 }
             }
+        }
+
+        func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
+            captureVisualSample(from: session.arSession.currentFrame)
         }
     }
 }

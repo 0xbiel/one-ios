@@ -415,7 +415,7 @@ final class AppStore {
                             frameBase64: sample.jpegData.base64EncodedString(),
                             width: sample.width,
                             height: sample.height,
-                            depthBase64: sample.depthData.base64EncodedString(),
+                            depthBase64: sample.depthData?.base64EncodedString(),
                             depthWidth: sample.depthWidth,
                             depthHeight: sample.depthHeight,
                             intrinsics: Matrix3x3Request(values: sample.intrinsics),
@@ -431,7 +431,7 @@ final class AppStore {
                     visualLandmarkWarning = "The 3D map is saved, but its visual landmark index could not be built. Separate cameras will need a fresh RoomPlan scan before automatic positioning."
                 }
             } else {
-                visualLandmarkWarning = "The 3D map is saved, but too few RGB + LiDAR samples were captured for automatic positioning of a separate camera."
+                visualLandmarkWarning = "The 3D map is saved, but too few RGB + camera-pose samples were captured for automatic positioning of a separate camera."
             }
 
             if let cameraID {
@@ -461,8 +461,8 @@ final class AppStore {
             mapUploadResult = ArtifactUploadResponse(artifactID: map.mapID, sha256: attachment.usdz?.sha256 ?? "", expiresAt: nil)
             try cacheRoomPlanModel(mapID: map.mapID, data: artifact.usdzData)
             scene = try await apiClient.refreshScene(homeID: session.homeID)
-            if scene.cameraRegistration?.status == .needsRescan {
-                roomPlanModelError = "The 3D room map is saved. Keep this device still in the camera's final position and run one more setup scan to position it."
+            if cameraID != nil, scene.cameraRegistration?.status == .needsRescan {
+                roomPlanModelError = "The 3D room map is saved, but this device's camera pose was not stable enough to register. Retry camera placement only if this iPhone is also the fixed camera."
             } else if scene.isRenderable3D {
                 roomPlanModelError = visualLandmarkWarning
             } else if !scene.isRenderable3D {

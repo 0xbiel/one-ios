@@ -250,9 +250,9 @@ struct RoomPlanVisualLandmarkFrameRequest: Codable, Sendable, Equatable {
     let frameBase64: String
     let width: Int
     let height: Int
-    let depthBase64: String
-    let depthWidth: Int
-    let depthHeight: Int
+    let depthBase64: String?
+    let depthWidth: Int?
+    let depthHeight: Int?
     let intrinsics: Matrix3x3Request
     let cameraToWorld: [[Double]]
     let capturedAt: String

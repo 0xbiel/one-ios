@@ -1,5 +1,6 @@
 import SwiftUI
 import RealityKit
+import simd
 
 struct RoomPlanUSDZView: View {
     let url: URL
@@ -29,8 +30,23 @@ private struct RealityKitRoomView: UIViewRepresentable {
         do {
             let model = try ModelEntity.loadModel(contentsOf: url)
             model.generateCollisionShapes(recursive: true)
+            let bounds = model.visualBounds(relativeTo: model)
+            let center = bounds.center
+            let extents = bounds.extents
+            model.position = SIMD3<Float>(-center.x, -center.y, -center.z)
+
             let anchor = AnchorEntity(world: .zero)
             anchor.addChild(model)
+
+            let camera = PerspectiveCamera()
+            camera.camera.fieldOfViewInDegrees = 46
+            let halfSpan = max(max(extents.x, extents.z) * 0.5, 0.4)
+            let halfFOV = Float.pi * 46 / 360
+            let fitDistance = halfSpan / max(tanf(halfFOV), 0.1) * 1.2
+            camera.position = SIMD3<Float>(0, max(extents.y * 0.5 + fitDistance, 1.2), 0)
+            camera.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+            anchor.addChild(camera)
+
             view.scene.addAnchor(anchor)
             view.installGestures([.translation, .rotation, .scale], for: model)
         } catch {

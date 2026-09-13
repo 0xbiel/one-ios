@@ -81,6 +81,17 @@ struct MapEvidenceSheet: View {
 private struct CameraRegistrationStatusCard: View {
     let registration: CameraRegistrationDescriptor?
 
+    private var copy: (title: String, detail: String) {
+        switch registration?.status ?? .unavailable {
+        case .positioned:
+            return ("Camera positioned", "Placed in the RoomPlan coordinate frame.")
+        case .needsRescan:
+            return ("Camera placement needs another attempt", "Keep the fixed camera still and retry Position this camera in 3D from that camera's own live view.")
+        case .unavailable:
+            return ("Camera placement pending", "The LiDAR map is ready. Position the fixed Mac or browser camera later from its own live view; the room does not need another LiDAR scan.")
+        }
+    }
+
     var body: some View {
         let state = registration?.status ?? .unavailable
         SurfaceCard(radius: 20) {
@@ -88,9 +99,9 @@ private struct CameraRegistrationStatusCard: View {
                 Image(systemName: state == .positioned ? "camera.viewfinder" : "camera.badge.ellipsis")
                     .foregroundStyle(state == .positioned ? OneTheme.accentBlue : OneTheme.secondaryInk)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(state == .positioned ? "Camera positioned" : state == .needsRescan ? "Camera needs another setup scan" : "Camera position unavailable")
+                    Text(copy.title)
                         .font(.subheadline.weight(.semibold))
-                    Text(state == .positioned ? "Placed in the RoomPlan coordinate frame." : "Finish a LiDAR scan with the paired camera held still in its final position.")
+                    Text(copy.detail)
                         .font(.caption)
                         .foregroundStyle(OneTheme.secondaryInk)
                 }
