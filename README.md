@@ -13,11 +13,12 @@ Room scans use a versioned normalized model (`units = m`, `upAxis = Y`) and shou
 Open `One.xcodeproj` in Xcode 27 or newer. The project targets iOS 26.0. RoomPlan requires a physical LiDAR-capable device; the simulator and non-LiDAR devices show the manual-zone fallback.
 
 The app includes a small `HTTPOneAPIClient` for the versioned FastAPI contract.
-The UI keeps safe demo fixtures for maps/events while a user completes pairing
-and a consented session is supplied. `OneApp` performs an unauthenticated
-`GET /api/v1/health` check at launch when a real endpoint is configured; a
-failed check is shown as “Backend unavailable” rather than silently implying a
-live connection. Room upload, LiveKit token, export, and deletion methods all
+`AppStore.demo` keeps safe fixtures for previews and tests. A configured build
+starts with an empty live store, performs an unauthenticated `GET
+/api/v1/health` check at launch, and loads only backend-returned events,
+objects, cameras, family members, and reminders after authentication. A failed
+check is shown as “Backend unavailable” rather than silently implying a live
+connection. Room upload, LiveKit token, export, and deletion methods all
 require an explicit home/session credential.
 
 ### Sign-in and sign-out
@@ -27,8 +28,8 @@ one-time code produced by the backend pairing flow; the app exchanges it at
 `POST /api/v1/pairing/complete`, verifies the account role through
 `GET /api/v1/me`, and stores the bearer session envelope in Keychain. Sign out
 calls `DELETE /api/v1/sessions/current` and clears the Keychain entry even when
-the network is temporarily unavailable. Loopback remains deterministic demo
-mode and does not require sign-in.
+the network is temporarily unavailable. A configured loopback endpoint is live
+and requires sign-in; demo mode is used only when the API URL is omitted.
 
 The same entry screen also supports creating a household account through
 `POST /api/v1/pairing/start` (with the deployment bootstrap secret supplied by
@@ -42,15 +43,17 @@ After authentication, onboarding records four purpose choices (`audio_capture`,
 backend before allowing the caregiver/resident shell. Privacy and consent are
 grouped under Account/Settings, and logout revokes the session before clearing
 the Keychain and scoped onboarding marker. A caregiver can switch between
-multiple care recipients in the Family view; the current native presentation
-still uses local fixtures for those map/reminder rows.
+multiple care recipients in the Family view; live presentation refreshes those
+map/event/reminder records from the backend.
 
 ## API endpoint configuration
 
-`RuntimeConfiguration` reads `ONE_API_BASE_URL` from the generated Info.plist
-and treats the loopback value `http://127.0.0.1:8000/api/v1` as simulator/demo
-mode. For a LAN or Tailscale deployment, set the build setting to the backend
-HTTPS base URL, for example `https://one-api.<tailnet-name>.ts.net/api/v1`;
+`RuntimeConfiguration` reads `ONE_API_BASE_URL` from the generated Info.plist.
+Any configured URL, including the default simulator endpoint
+`http://127.0.0.1:8000/api/v1`, is live; demo mode is reserved for previews and
+tests that omit the value. For a LAN or Tailscale deployment, set the build
+setting to the backend HTTPS base URL, for example
+`https://one-api.<tailnet-name>.ts.net/api/v1`;
 keep authentication and certificates out of source control. A convenient
 same-origin setup is `tailscale serve --bg http://127.0.0.1:4173`, which routes
 the web container’s `/api/` proxy to FastAPI; use the printed HTTPS URL plus

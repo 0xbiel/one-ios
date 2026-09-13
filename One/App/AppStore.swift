@@ -25,6 +25,7 @@ final class AppStore {
     var apiClient: any OneAPIClient
     var session: AuthSession?
     var authError: String?
+    var emailChallenge: EmailAuthChallenge?
     var onboardingStep = 0
     var onboardingConsents: [String: Bool] = ["Daily check-in support": false, "Room and camera data": false, "Medication reminders": false, "Family sharing": false]
     var selectedSubjectName = "Everyone"
@@ -33,24 +34,33 @@ final class AppStore {
     var inviteCode: String?
     var mapUploadResult: ArtifactUploadResponse?
     var careRecipients: [CareRecipient] = []
+    var cameraCount = 0
     private let sessionStore: any SessionKeyStore
-    let runtimeConfiguration = RuntimeConfiguration()
+    let runtimeConfiguration: RuntimeConfiguration
 
-    init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], medicationDoses: [MedicationDose] = [], medicationPlans: [MedicationPlan] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore()) {
+    init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], medicationDoses: [MedicationDose] = [], medicationPlans: [MedicationPlan] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore(), runtimeConfiguration: RuntimeConfiguration = RuntimeConfiguration()) {
         self.events = events; self.scan = scan; self.consents = consents
-        self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.medicationPlans = medicationPlans; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore
+        self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.medicationPlans = medicationPlans; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore; self.runtimeConfiguration = runtimeConfiguration
         self.careRecipients = caregivers.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
     }
 
     static func configured() -> AppStore {
-        let store = AppStore.demo
-        guard !store.runtimeConfiguration.isDemoMode else { return store }
+        let configuration = RuntimeConfiguration()
+        let store = AppStore(events: [], scan: .empty, consents: [], caregivers: [], medicationDoses: [], backendState: .checking, runtimeConfiguration: configuration)
+        guard !configuration.isDemoMode else { return AppStore.demo }
         do {
             if let data = try store.sessionStore.load(Self.sessionKey), let saved = try? JSONDecoder().decode(AuthSession.self, from: data), saved.expiresAt.map({ $0 > Date() }) ?? true { store.session = saved }
         } catch { /* A missing or unreadable credential starts signed out. */ }
         store.apiClient = HTTPOneAPIClient(configuration: store.runtimeConfiguration, accessToken: store.session?.accessToken, homeID: store.session?.homeID)
         if let role = store.session?.role { store.role = role }
         store.backendState = .checking
+        return store
+    }
+
+    static var live: AppStore {
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": RuntimeConfiguration.localSimulatorURL.absoluteString])
+        let store = AppStore(events: [], scan: .empty, consents: [], caregivers: [], medicationDoses: [], backendState: .checking, runtimeConfiguration: configuration)
+        store.assistantMessages = []
         return store
     }
 
@@ -85,7 +95,7 @@ final class AppStore {
             MedicationDose(id: UUID(), medicationName: "Midday reminder", instructions: "After lunch", scheduledAt: midday, status: .needsConfirmation, assignedCaregiverName: "Joan Soler"),
             MedicationDose(id: UUID(), medicationName: "Evening reminder", instructions: "With dinner", scheduledAt: evening, status: .scheduled, assignedCaregiverName: nil)
         ]
-        return AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, medicationDoses: medicationDoses)
+        return AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, medicationDoses: medicationDoses, runtimeConfiguration: RuntimeConfiguration(info: [:]))
     }
 
     func toggleConsent(_ consent: ConsentRecord) {
@@ -94,6 +104,10 @@ final class AppStore {
     }
 
     func sendAssistantMessage() {
+        guard runtimeConfiguration.isDemoMode else {
+            authError = "The live organizer assistant is not connected yet."
+            return
+        }
         assistantMessages.append(AssistantMessage(isUser: true, text: "I’m ready for today’s check-in."))
         assistantMessages.append(AssistantMessage(isUser: false, text: "Thanks. I’ve noted that you’re ready. Your caregiver can see the check-in status."))
     }
@@ -168,7 +182,7 @@ final class AppStore {
     }
 
     func checkBackend() async {
-        guard !runtimeConfiguration.isDemoMode, session != nil else { backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable; return }
+        guard !runtimeConfiguration.isDemoMode else { backendState = .demo; return }
         backendState = .checking
         do {
             let response = try await apiClient.health()
@@ -185,24 +199,30 @@ final class AppStore {
         authError = nil
         do {
             let authenticated = try await apiClient.completePairing(code: pairingCode.trimmingCharacters(in: .whitespacesAndNewlines))
-            try sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
             applySession(authenticated)
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
 
     func requestEmailCode(email: String, purpose: String, displayName: String? = nil, homeName: String = "ONE Home") async -> String? {
         authError = nil
+        emailChallenge = nil
         do {
-            let challenge = try await apiClient.requestEmailCode(EmailAuthRequest(email: email.trimmingCharacters(in: .whitespacesAndNewlines), purpose: purpose, displayName: displayName, homeName: homeName, role: .caregiver))
-            return challenge.devCode
-        } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not send the email code."; return nil }
+            emailChallenge = try await apiClient.requestEmailCode(EmailAuthRequest(email: email.trimmingCharacters(in: .whitespacesAndNewlines), purpose: purpose, displayName: displayName, homeName: homeName, role: .caregiver))
+            return emailChallenge?.devCode ?? "requested"
+        } catch {
+            if let apiError = error as? OneAPIError, case let .server(status: 404, message) = apiError {
+                authError = "\(message) Choose Create household if this is your first ONE account."
+            } else {
+                authError = (error as? LocalizedError)?.errorDescription ?? "Could not send the email code."
+            }
+            return nil
+        }
     }
 
     func login(email: String, code: String) async {
         authError = nil
         do {
             let authenticated = try await apiClient.verifyEmailCode(EmailAuthVerifyRequest(email: email, code: code))
-            try sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
             applySession(authenticated)
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
@@ -237,10 +257,130 @@ final class AppStore {
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not load family data." }
     }
 
+    func refreshLiveData() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do { events = try await apiClient.events(homeID: session.homeID) } catch { events = [] }
+        do {
+            let objects = try await apiClient.roomObjects(homeID: session.homeID)
+            scan = RoomScan(id: scan.id, schemaVersion: scan.schemaVersion, capturedAt: scan.capturedAt, units: scan.units, upAxis: scan.upAxis, objects: objects, zones: scan.zones, artifactHash: scan.artifactHash, exportedUSDZName: scan.exportedUSDZName)
+        } catch { scan = .empty }
+        do { cameraCount = try await apiClient.cameraCount(homeID: session.homeID) } catch { cameraCount = 0 }
+        await refreshFamilyData()
+    }
+
     func createFamilyInvite(name: String, email: String?) async {
         guard !runtimeConfiguration.isDemoMode, let session else { inviteCode = "Demo invites require a live household session."; return }
         do { inviteCode = try await apiClient.createFamilyInvite(homeID: session.homeID, request: FamilyInviteRequest(displayName: name, email: email, role: .caregiver, expiresInSeconds: 86_400)) }
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not create the invitation." }
+    }
+
+    /// Updates one existing household member. Demo rows are synthetic and are
+    /// changed locally; live mutations are sent to the backend, which remains
+    /// authoritative for role and consent policy.
+    func updateFamilyMember(_ memberID: UUID, accessRole: CaregiverAccessRole) async -> Bool {
+        guard let existing = caregivers.first(where: { $0.id == memberID }) else {
+            authError = OneAPIError.familyMemberNotFound.localizedDescription
+            return false
+        }
+        guard !existing.isCurrentUser, session?.userID != memberID else {
+            authError = OneAPIError.cannotChangeOwnAccess.localizedDescription
+            return false
+        }
+        guard existing.role != .owner else {
+            authError = OneAPIError.cannotChangeOwnerAccess.localizedDescription
+            return false
+        }
+        guard accessRole != .owner else {
+            authError = OneAPIError.cannotChangeOwnerAccess.localizedDescription
+            return false
+        }
+
+        if runtimeConfiguration.isDemoMode {
+            caregivers[caregivers.firstIndex(where: { $0.id == memberID })!] = CaregiverAccount(id: existing.id, name: existing.name, relationship: existing.relationship, role: accessRole, permissions: demoPermissions(for: accessRole), isCurrentUser: false)
+            authError = nil
+            return true
+        }
+
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        guard let backendRole = accessRole.backendRole else {
+            authError = OneAPIError.unsupportedFamilyAccessRole(accessRole).localizedDescription
+            return false
+        }
+
+        do {
+            let result = try await apiClient.updateFamilyMember(homeID: session.homeID, userID: memberID, request: FamilyMemberUpdateRequest(role: backendRole))
+            replaceFamilyMember(result.member, preservingCurrentUser: existing.isCurrentUser)
+            authError = nil
+            return true
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not update household access."
+            return false
+        }
+    }
+
+    /// Revokes one person's membership. Self-removal and owner removal are
+    /// blocked before the request; the backend repeats these checks and also
+    /// invalidates the removed member's sessions.
+    func removeFamilyMember(_ memberID: UUID) async -> Bool {
+        guard let existing = caregivers.first(where: { $0.id == memberID }) else {
+            authError = OneAPIError.familyMemberNotFound.localizedDescription
+            return false
+        }
+        guard !existing.isCurrentUser, session?.userID != memberID else {
+            authError = OneAPIError.cannotChangeOwnAccess.localizedDescription
+            return false
+        }
+        guard existing.role != .owner else {
+            authError = OneAPIError.cannotChangeOwnerAccess.localizedDescription
+            return false
+        }
+
+        if runtimeConfiguration.isDemoMode {
+            removeFamilyMemberLocally(memberID)
+            authError = nil
+            return true
+        }
+
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        do {
+            _ = try await apiClient.removeFamilyMember(homeID: session.homeID, userID: memberID)
+            removeFamilyMemberLocally(memberID)
+            authError = nil
+            return true
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not remove household access."
+            return false
+        }
+    }
+
+    private func demoPermissions(for role: CaregiverAccessRole) -> [String] {
+        switch role {
+        case .owner: ["Manage people", "Manage plans", "Review events"]
+        case .primaryCaregiver: ["Manage plans", "Review events"]
+        case .supporter: ["Check in", "View today"]
+        case .viewer: ["View today"]
+        }
+    }
+
+    private func replaceFamilyMember(_ member: CaregiverAccount, preservingCurrentUser: Bool) {
+        guard let index = caregivers.firstIndex(where: { $0.id == member.id }) else { return }
+        caregivers[index] = CaregiverAccount(id: member.id, name: member.name, relationship: member.relationship, role: member.role, permissions: member.permissions, isCurrentUser: preservingCurrentUser || member.id == session?.userID)
+        careRecipients = caregivers.filter { !$0.isCurrentUser }.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
+    }
+
+    private func removeFamilyMemberLocally(_ memberID: UUID) {
+        caregivers.removeAll { $0.id == memberID }
+        careRecipients.removeAll { $0.id == memberID }
+        if selectedSubjectID == memberID {
+            selectedSubjectID = nil
+            selectedSubjectName = "Everyone"
+        }
     }
 
     func refreshMedicationReminders() async {
@@ -250,17 +390,29 @@ final class AppStore {
     }
 
     func uploadCurrentMap() async {
-        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        guard !runtimeConfiguration.isDemoMode, session != nil else { return }
         do { mapUploadResult = try await apiClient.uploadRoomScan(roomID: scan.id, normalizedJSON: JSONEncoder.one.encode(scan), usdz: nil) }
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the room map." }
     }
 
     private func applySession(_ authenticated: AuthSession) {
-        try? sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
+        if !runtimeConfiguration.isDemoMode {
+            try? sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
+            events = []
+            scan = .empty
+            consents = []
+            caregivers = []
+            careRecipients = []
+            medicationDoses = []
+            medicationPlans = []
+            cameraCount = 0
+            assistantMessages = []
+        }
         session = authenticated; role = authenticated.role
         onboardingStep = 0
         apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration, accessToken: authenticated.accessToken, homeID: authenticated.homeID)
         backendState = .connected
+        Task { await refreshLiveData() }
     }
 
     func completeOnboarding() { guard let session else { return }; try? sessionStore.save(Data("complete".utf8), for: Self.onboardingKey(homeID: session.homeID, userID: session.userID)); onboardingStep = 3 }
@@ -278,7 +430,25 @@ final class AppStore {
 
     func logout() async {
         let onboardingCredential = session.map { Self.onboardingKey(homeID: $0.homeID, userID: $0.userID) }
-        defer { try? sessionStore.delete(Self.sessionKey); if let onboardingCredential { try? sessionStore.delete(onboardingCredential) }; session = nil; authError = nil; apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration); backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable }
+        defer {
+            try? sessionStore.delete(Self.sessionKey)
+            if let onboardingCredential { try? sessionStore.delete(onboardingCredential) }
+            session = nil
+            authError = nil
+            apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration)
+            backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable
+            if !runtimeConfiguration.isDemoMode {
+                events = []
+                scan = .empty
+                consents = []
+                caregivers = []
+                careRecipients = []
+                medicationDoses = []
+                medicationPlans = []
+                cameraCount = 0
+                assistantMessages = []
+            }
+        }
         guard session != nil else { return }
         do { try await apiClient.logout() } catch { /* Local credentials are cleared even if the network is unavailable. */ }
     }

@@ -12,7 +12,10 @@ struct OneApp: App {
         WindowGroup {
             RootView(store: store)
                 .tint(OneTheme.cyan)
-                .task { await store.checkBackend() }
+                .task {
+                    await store.checkBackend()
+                    await store.refreshLiveData()
+                }
         }
     }
 }

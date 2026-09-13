@@ -7,16 +7,25 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		14589C3B92BF0F25E33B5D5B /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC0A5231CEB851F1933D6E8 /* HomeView.swift */; };
 		14E12DA5BDC4760F05D58E4D /* OneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B8EAD036BB929430BC85C2 /* OneTests.swift */; };
-		2E216DA3A4112A05CEA1701C /* OneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91C901EB476C5835DCB29011 /* OneApp.swift */; };
-		452026B2665CFCCB12510FDC /* Services.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2622837E3A9F69C5BE585093 /* Services.swift */; };
-		503C9523D878F2BDE04D8CCA /* BackendContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CEE1B4AA874CE133BA1D135 /* BackendContracts.swift */; };
+		20888E946549B06C96BDBDAF /* RoomPlanCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */; };
+		254147FE88EDD1993098F9A8 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D019DBF69CF28A1719FBA71 /* AppStore.swift */; };
+		3BE3DC0F3373EAC34720DEA0 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C112120C88D0FC93614274 /* AuthenticationView.swift */; };
+		3CF500DE2A952273C9EDEBE8 /* EventsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E88B76B5D76360C9A12F4633 /* EventsView.swift */; };
+		493E10A261140B1BC2CC361B /* FamilyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23676A04AB3156518DB63059 /* FamilyView.swift */; };
+		4F93247732C2307418BF5129 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EDBB883AFAF5A7F0A85739 /* Components.swift */; };
+		594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515046F62BFD6A039EDDBA3E /* OneTheme.swift */; };
 		5C908252132EEB61769D2975 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */; };
-		5CA8C175A31DF02D8506DEA2 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABED9CCF3FF0DD091E4FC12 /* Models.swift */; };
-		7B06AD5106CF25891E6F2B1D /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A3F66011447E7AEBA4C0F15 /* Views.swift */; };
-		AFF360D3B116587A1A54B4A8 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7943BE432672A2D28834F660 /* Theme.swift */; };
-		D78DBB58D8CC5053BF95B57D /* RoomPlanCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5AB955703D65DF5C01703CD /* RoomPlanCaptureView.swift */; };
-		ED06032B12DFCD59EE70C003 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20B00A14E01462307C653822 /* AppStore.swift */; };
+		6AA42C3DB98D0BE3DD90E4EB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DD033E4F49D68C4D705B75 /* RootView.swift */; };
+		7398769CF793D626F08D4E6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09509CA5012A8E0B3BD17AA4 /* Models.swift */; };
+		8D05E58E224E873F738534A9 /* BackendContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102E67084C9F650302C0E8E7 /* BackendContracts.swift */; };
+		9BF68963ED6A0F9F06E97D73 /* AssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A3257A3830A3C495984167 /* AssistantView.swift */; };
+		A655ABFB79D7A532A54C8EE7 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EDC8CE1140D60643A7524E /* OnboardingView.swift */; };
+		BC427E75A868B2308FA2D89B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E28BA46E8901F5D89D50092 /* SettingsView.swift */; };
+		CAD81F43B62B7EAFF1BF414A /* MapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA911D865B440547A2701529 /* MapView.swift */; };
+		D578CF1E50B4233904A442F8 /* OneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B520B423F23BD2037C9C90E9 /* OneApp.swift */; };
+		FAC75D544B6871D4A568DAEE /* Services.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BE6BA9D01FF21154D6C041A /* Services.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,28 +39,95 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		09509CA5012A8E0B3BD17AA4 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		102E67084C9F650302C0E8E7 /* BackendContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendContracts.swift; sourceTree = "<group>"; };
 		167FDD686D21A14C8CF73D98 /* OneTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		17B8EAD036BB929430BC85C2 /* OneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneTests.swift; sourceTree = "<group>"; };
-		20B00A14E01462307C653822 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
-		2622837E3A9F69C5BE585093 /* Services.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services.swift; sourceTree = "<group>"; };
-		50091C923FDB2EC458E7C045 /* One.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = One.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		6CEE1B4AA874CE133BA1D135 /* BackendContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendContracts.swift; sourceTree = "<group>"; };
+		1E28BA46E8901F5D89D50092 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		23676A04AB3156518DB63059 /* FamilyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FamilyView.swift; sourceTree = "<group>"; };
+		31C112120C88D0FC93614274 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
+		48EDC8CE1140D60643A7524E /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		4CC0A5231CEB851F1933D6E8 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		50091C923FDB2EC458E7C045 /* One.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = One.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		515046F62BFD6A039EDDBA3E /* OneTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneTheme.swift; sourceTree = "<group>"; };
+		58DD033E4F49D68C4D705B75 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		6BE6BA9D01FF21154D6C041A /* Services.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services.swift; sourceTree = "<group>"; };
+		6D019DBF69CF28A1719FBA71 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		752F610BAFB0F25DFCEAD4F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		7943BE432672A2D28834F660 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		7A3F66011447E7AEBA4C0F15 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
-		91C901EB476C5835DCB29011 /* OneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneApp.swift; sourceTree = "<group>"; };
-		AABED9CCF3FF0DD091E4FC12 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		C5AB955703D65DF5C01703CD /* RoomPlanCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanCaptureView.swift; sourceTree = "<group>"; };
-		D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		AA911D865B440547A2701529 /* MapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapView.swift; sourceTree = "<group>"; };
+		B520B423F23BD2037C9C90E9 /* OneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneApp.swift; sourceTree = "<group>"; };
+		D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanCaptureView.swift; sourceTree = "<group>"; };
+		D1A3257A3830A3C495984167 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
+		E7EDBB883AFAF5A7F0A85739 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		E88B76B5D76360C9A12F4633 /* EventsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		03F85C9BA5DE09E1753DF350 /* Family */ = {
+			isa = PBXGroup;
+			children = (
+				23676A04AB3156518DB63059 /* FamilyView.swift */,
+			);
+			path = Family;
+			sourceTree = "<group>";
+		};
+		191298EFAAA2865264536FFA /* Events */ = {
+			isa = PBXGroup;
+			children = (
+				E88B76B5D76360C9A12F4633 /* EventsView.swift */,
+			);
+			path = Events;
+			sourceTree = "<group>";
+		};
+		19D8EA82D8F8524E51CEC1FA /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				3258FB4BA3A03E6E5B41113A /* DesignSystem */,
+				6190EA45773CEFB517B4FDC8 /* Networking */,
+				ECD6062189E1E13F4ED0F437 /* Utilities */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
 		2F58F2420F58898705ED17D3 /* OneTests */ = {
 			isa = PBXGroup;
 			children = (
 				17B8EAD036BB929430BC85C2 /* OneTests.swift */,
 			);
 			path = OneTests;
+			sourceTree = "<group>";
+		};
+		3258FB4BA3A03E6E5B41113A /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				E7EDBB883AFAF5A7F0A85739 /* Components.swift */,
+				515046F62BFD6A039EDDBA3E /* OneTheme.swift */,
+			);
+			path = DesignSystem;
+			sourceTree = "<group>";
+		};
+		48D396D03446362F52AC6532 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				CF9A34AB694285CD5C4FAABC /* Assistant */,
+				C1037205DBC61DF05AECC493 /* Authentication */,
+				191298EFAAA2865264536FFA /* Events */,
+				03F85C9BA5DE09E1753DF350 /* Family */,
+				DFB575999655C42FFE1DD4C0 /* Home */,
+				CCBBF04EE29E6732BC31322B /* Map */,
+				BEFAED0D11B02C37F849806D /* Onboarding */,
+				6FAE557604E6D20373A51B07 /* Settings */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		56756CED8953D299CF20FC79 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				09509CA5012A8E0B3BD17AA4 /* Models.swift */,
+			);
+			path = Models;
 			sourceTree = "<group>";
 		};
 		5C011A8CA2D706823B02179F = {
@@ -66,18 +142,30 @@
 		5CCB684DA81D289109879F41 /* One */ = {
 			isa = PBXGroup;
 			children = (
-				20B00A14E01462307C653822 /* AppStore.swift */,
-				6CEE1B4AA874CE133BA1D135 /* BackendContracts.swift */,
+				E415115B19C4010DD1616D19 /* App */,
+				19D8EA82D8F8524E51CEC1FA /* Core */,
+				48D396D03446362F52AC6532 /* Features */,
+				56756CED8953D299CF20FC79 /* Models */,
 				752F610BAFB0F25DFCEAD4F4 /* Info.plist */,
-				AABED9CCF3FF0DD091E4FC12 /* Models.swift */,
-				91C901EB476C5835DCB29011 /* OneApp.swift */,
 				D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */,
-				C5AB955703D65DF5C01703CD /* RoomPlanCaptureView.swift */,
-				2622837E3A9F69C5BE585093 /* Services.swift */,
-				7943BE432672A2D28834F660 /* Theme.swift */,
-				7A3F66011447E7AEBA4C0F15 /* Views.swift */,
 			);
 			path = One;
+			sourceTree = "<group>";
+		};
+		6190EA45773CEFB517B4FDC8 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				102E67084C9F650302C0E8E7 /* BackendContracts.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		6FAE557604E6D20373A51B07 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				1E28BA46E8901F5D89D50092 /* SettingsView.swift */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 		8EC650B74198568B9ECDA582 /* Products */ = {
@@ -87,6 +175,65 @@
 				167FDD686D21A14C8CF73D98 /* OneTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BEFAED0D11B02C37F849806D /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				48EDC8CE1140D60643A7524E /* OnboardingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		C1037205DBC61DF05AECC493 /* Authentication */ = {
+			isa = PBXGroup;
+			children = (
+				31C112120C88D0FC93614274 /* AuthenticationView.swift */,
+			);
+			path = Authentication;
+			sourceTree = "<group>";
+		};
+		CCBBF04EE29E6732BC31322B /* Map */ = {
+			isa = PBXGroup;
+			children = (
+				AA911D865B440547A2701529 /* MapView.swift */,
+				D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */,
+			);
+			path = Map;
+			sourceTree = "<group>";
+		};
+		CF9A34AB694285CD5C4FAABC /* Assistant */ = {
+			isa = PBXGroup;
+			children = (
+				D1A3257A3830A3C495984167 /* AssistantView.swift */,
+			);
+			path = Assistant;
+			sourceTree = "<group>";
+		};
+		DFB575999655C42FFE1DD4C0 /* Home */ = {
+			isa = PBXGroup;
+			children = (
+				4CC0A5231CEB851F1933D6E8 /* HomeView.swift */,
+			);
+			path = Home;
+			sourceTree = "<group>";
+		};
+		E415115B19C4010DD1616D19 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				6D019DBF69CF28A1719FBA71 /* AppStore.swift */,
+				B520B423F23BD2037C9C90E9 /* OneApp.swift */,
+				58DD033E4F49D68C4D705B75 /* RootView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		ECD6062189E1E13F4ED0F437 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				6BE6BA9D01FF21154D6C041A /* Services.swift */,
+			);
+			path = Utilities;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -136,8 +283,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = DDA39AAA93E64FD727B5A6B9 /* Build configuration list for PBXProject "One" */;
 			developmentRegion = en;
@@ -175,14 +320,23 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				ED06032B12DFCD59EE70C003 /* AppStore.swift in Sources */,
-				503C9523D878F2BDE04D8CCA /* BackendContracts.swift in Sources */,
-				5CA8C175A31DF02D8506DEA2 /* Models.swift in Sources */,
-				2E216DA3A4112A05CEA1701C /* OneApp.swift in Sources */,
-				D78DBB58D8CC5053BF95B57D /* RoomPlanCaptureView.swift in Sources */,
-				452026B2665CFCCB12510FDC /* Services.swift in Sources */,
-				AFF360D3B116587A1A54B4A8 /* Theme.swift in Sources */,
-				7B06AD5106CF25891E6F2B1D /* Views.swift in Sources */,
+				254147FE88EDD1993098F9A8 /* AppStore.swift in Sources */,
+				9BF68963ED6A0F9F06E97D73 /* AssistantView.swift in Sources */,
+				3BE3DC0F3373EAC34720DEA0 /* AuthenticationView.swift in Sources */,
+				8D05E58E224E873F738534A9 /* BackendContracts.swift in Sources */,
+				4F93247732C2307418BF5129 /* Components.swift in Sources */,
+				3CF500DE2A952273C9EDEBE8 /* EventsView.swift in Sources */,
+				493E10A261140B1BC2CC361B /* FamilyView.swift in Sources */,
+				14589C3B92BF0F25E33B5D5B /* HomeView.swift in Sources */,
+				CAD81F43B62B7EAFF1BF414A /* MapView.swift in Sources */,
+				7398769CF793D626F08D4E6E /* Models.swift in Sources */,
+				A655ABFB79D7A532A54C8EE7 /* OnboardingView.swift in Sources */,
+				D578CF1E50B4233904A442F8 /* OneApp.swift in Sources */,
+				594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */,
+				20888E946549B06C96BDBDAF /* RoomPlanCaptureView.swift in Sources */,
+				6AA42C3DB98D0BE3DD90E4EB /* RootView.swift in Sources */,
+				FAC75D544B6871D4A568DAEE /* Services.swift in Sources */,
+				BC427E75A868B2308FA2D89B /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -278,11 +432,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				ONE_API_BASE_URL = "http://127.0.0.1:8000/api/v1";
+				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xbiel.one;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -313,11 +469,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				ONE_API_BASE_URL = "http://127.0.0.1:8000/api/v1";
+				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xbiel.one;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

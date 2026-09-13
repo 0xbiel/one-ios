@@ -20,9 +20,20 @@ enum CaregiverAccessRole: String, Codable, CaseIterable, Identifiable, Sendable 
         case .viewer: "View only"
         }
     }
+
+    /// The backend currently exposes only resident/caregiver membership roles.
+    /// Keep unsupported demo-only roles out of live mutations rather than
+    /// mapping them to a broader permission set.
+    var backendRole: UserRole? {
+        switch self {
+        case .primaryCaregiver: .caregiver
+        case .viewer: .resident
+        case .owner, .supporter: nil
+        }
+    }
 }
 
-struct CaregiverAccount: Codable, Identifiable, Sendable {
+struct CaregiverAccount: Codable, Identifiable, Sendable, Equatable {
     let id: UUID
     let name: String
     let relationship: String
@@ -107,6 +118,12 @@ struct RoomScan: Codable, Identifiable, Sendable {
     let zones: [Zone]
     let artifactHash: String
     var exportedUSDZName: String?
+}
+
+extension RoomScan {
+    static var empty: RoomScan {
+        RoomScan(id: UUID(), schemaVersion: 1, capturedAt: Date(), units: "m", upAxis: "Y", objects: [], zones: [], artifactHash: "", exportedUSDZName: nil)
+    }
 }
 
 struct MapPin: Identifiable, Sendable {

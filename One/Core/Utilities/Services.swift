@@ -10,9 +10,9 @@ struct RuntimeConfiguration: Sendable {
     init(info: [String: Any] = Bundle.main.infoDictionary ?? [:]) {
         let configured = (info["ONE_API_BASE_URL"] as? String).flatMap(URL.init(string:))
         apiBaseURL = configured ?? Self.localSimulatorURL
-        // The checked-in build setting points at loopback for simulator/demo use;
-        // a LAN or Tailscale HTTPS URL explicitly opts into the real API seam.
-        isDemoMode = configured == nil || configured == Self.localSimulatorURL
+        // Demo data is only used when no API URL is supplied (for previews and
+        // unit tests). A configured loopback, LAN, or Tailscale URL is live.
+        isDemoMode = configured == nil
     }
 }
 

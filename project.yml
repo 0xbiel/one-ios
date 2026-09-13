@@ -15,7 +15,12 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: One
+      - path: One/App
+      - path: One/Core
+      - path: One/Features
+      - path: One/Models
+    resources:
+      - path: One/PrivacyInfo.xcprivacy
     settings:
       base:
         GENERATE_INFOPLIST_FILE: false

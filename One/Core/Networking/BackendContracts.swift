@@ -47,6 +47,11 @@ struct AuthSession: Codable, Sendable, Equatable {
 struct BootstrapAccountRequest: Codable, Sendable { let displayName: String; let email: String?; let homeName: String; let role: UserRole }
 struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String?; let email: String? }
 struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
+struct FamilyMemberUpdateRequest: Codable, Sendable, Equatable { let role: UserRole }
+struct FamilyMemberMutationResult: Sendable, Equatable {
+    let member: CaregiverAccount
+    let invalidatedSessions: Int
+}
 struct ConsentRequest: Codable, Sendable { let purpose: String; let policyVersion: String; let granted: Bool }
 struct MedicationPlan: Codable, Identifiable, Sendable, Equatable {
     let id: UUID
@@ -106,12 +111,20 @@ enum BackendConnectionState: String, Sendable {
 enum OneAPIError: LocalizedError, Sendable {
     case missingSession
     case invalidResponse
+    case familyMemberNotFound
+    case cannotChangeOwnAccess
+    case cannotChangeOwnerAccess
+    case unsupportedFamilyAccessRole(CaregiverAccessRole)
     case server(status: Int, message: String)
 
     var errorDescription: String? {
         switch self {
         case .missingSession: "A home session is required for this ONE API operation."
         case .invalidResponse: "The ONE API returned an invalid response."
+        case .familyMemberNotFound: "That person is no longer available in this household."
+        case .cannotChangeOwnAccess: "You cannot change or remove your own household access."
+        case .cannotChangeOwnerAccess: "Owner access requires a separate administrator workflow."
+        case let .unsupportedFamilyAccessRole(role): "The live household API does not support the \(role.title) access level yet."
         case let .server(status, message): "ONE API error (\(status)): \(message)"
         }
     }
@@ -125,8 +138,13 @@ protocol OneAPIClient: Sendable {
     func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession
+    func events(homeID: UUID) async throws -> [ObservedEvent]
+    func roomObjects(homeID: UUID) async throws -> [RoomObject]
+    func cameraCount(homeID: UUID) async throws -> Int
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
+    func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult
+    func removeFamilyMember(homeID: UUID, userID: UUID) async throws -> FamilyMemberMutationResult
     func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan]
     func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan
     func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan
@@ -147,8 +165,18 @@ struct MockOneAPIClient: OneAPIClient {
     func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(600), accessToken: "demo", homeID: UUID(), userID: UUID(), role: request.role.rawValue) }
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
+    func events(homeID: UUID) async throws -> [ObservedEvent] { [] }
+    func roomObjects(homeID: UUID) async throws -> [RoomObject] { [] }
+    func cameraCount(homeID: UUID) async throws -> Int { 0 }
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String { "123456" }
+    func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult {
+        let role: CaregiverAccessRole = request.role == .caregiver ? .primaryCaregiver : .viewer
+        return FamilyMemberMutationResult(member: CaregiverAccount(id: userID, name: "Household member", relationship: "Household member", role: role, permissions: role == .viewer ? ["View today"] : ["Review events"], isCurrentUser: false), invalidatedSessions: 0)
+    }
+    func removeFamilyMember(homeID: UUID, userID: UUID) async throws -> FamilyMemberMutationResult {
+        FamilyMemberMutationResult(member: CaregiverAccount(id: userID, name: "Household member", relationship: "Household member", role: .viewer, permissions: ["View today"], isCurrentUser: false), invalidatedSessions: 0)
+    }
     func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan] { [] }
     func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan { MedicationPlan(id: UUID(), subjectUserID: request.subjectUserID, name: request.name, dose: request.dose, schedule: request.schedule, instructions: request.instructions, active: request.active, version: 1, assignedCaregiverID: request.assignedCaregiverID) }
     func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan { MedicationPlan(id: planID, subjectUserID: UUID(), name: request.name ?? "Reminder", dose: request.dose ?? "", schedule: request.schedule ?? "", instructions: request.instructions ?? "", active: request.active ?? true, version: (request.version ?? 1) + 1, assignedCaregiverID: request.assignedCaregiverID) }
@@ -162,8 +190,9 @@ struct MockOneAPIClient: OneAPIClient {
 }
 
 /// Minimal URLSession adapter for the versioned FastAPI contract. It is used
-/// only when `ONE_API_BASE_URL` points to a real LAN/Tailscale HTTPS host;
-/// loopback remains the deterministic simulator/demo mode.
+/// whenever `ONE_API_BASE_URL` is configured. The checked-in loopback URL is
+/// intended for a local API on the simulator; previews can omit the setting
+/// to use deterministic demo data.
 struct HTTPOneAPIClient: OneAPIClient {
     let baseURL: URL
     let accessToken: String?
@@ -229,6 +258,23 @@ struct HTTPOneAPIClient: OneAPIClient {
         return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: response.role == "resident" ? .resident : .caregiver, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 
+    func events(homeID: UUID) async throws -> [ObservedEvent] {
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.uuidString)/events"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "limit", value: "50")]
+        let response: BackendEventsResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
+        return response.data.compactMap(\.event)
+    }
+
+    func roomObjects(homeID: UUID) async throws -> [RoomObject] {
+        let response: BackendObjectsResponse = try await send(path: "/homes/\(homeID.uuidString)/objects/last-seen", method: "GET", body: nil, requiresSession: true)
+        return response.data.compactMap(\.object)
+    }
+
+    func cameraCount(homeID: UUID) async throws -> Int {
+        let response: BackendCamerasResponse = try await send(path: "/homes/\(homeID.uuidString)/cameras", method: "GET", body: nil, requiresSession: true)
+        return response.data.count
+    }
+
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] {
         let response: BackendFamilyMembersResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members", method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.account }
@@ -238,6 +284,19 @@ struct HTTPOneAPIClient: OneAPIClient {
         let body = try JSONEncoder.one.encode(request)
         let response: BackendFamilyInviteResponse = try await send(path: "/homes/\(homeID.uuidString)/family/invites", method: "POST", body: body, requiresSession: true)
         return response.code
+    }
+
+    func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendFamilyMemberMutationResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members/\(userID.uuidString)", method: "PATCH", body: body, requiresSession: true)
+        guard let member = response.data.account else { throw OneAPIError.invalidResponse }
+        return FamilyMemberMutationResult(member: member, invalidatedSessions: response.invalidatedSessions)
+    }
+
+    func removeFamilyMember(homeID: UUID, userID: UUID) async throws -> FamilyMemberMutationResult {
+        let response: BackendFamilyMemberMutationResponse = try await send(path: "/homes/\(homeID.uuidString)/family/members/\(userID.uuidString)", method: "DELETE", body: nil, requiresSession: true)
+        guard let member = response.data.account else { throw OneAPIError.invalidResponse }
+        return FamilyMemberMutationResult(member: member, invalidatedSessions: response.invalidatedSessions)
     }
 
     func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool = true) async throws -> [MedicationPlan] {
@@ -368,7 +427,59 @@ private struct BackendLiveKitResponse: Decodable { let url: String; let token: S
 private struct BackendExportResponse: Decodable { let homeID: String }
 private struct BackendDeletionResponse: Decodable { let requestID: String; let status: String }
 private struct BackendFamilyInviteResponse: Decodable { let code: String }
+private struct BackendEventsResponse: Decodable { let data: [BackendEvent] }
+private struct BackendEvent: Decodable {
+    let id: String
+    let eventType: String
+    let status: String?
+    let explanation: String?
+    let confidence: Double?
+    let firstSeenAt: Date?
+    let lastSeenAt: Date?
+
+    var event: ObservedEvent? {
+        guard let id = UUID(uuidString: id), let timestamp = lastSeenAt ?? firstSeenAt else { return nil }
+        let kind: EventKind
+        switch eventType {
+        case "check_in", "checkin": kind = .checkIn
+        case "no_response": kind = .noResponse
+        case "assistant_request": kind = .assistant
+        default: kind = .movement
+        }
+        let confidenceLevel: ObservationConfidence
+        switch confidence ?? 0 {
+        case 0.8...: confidenceLevel = .high
+        case 0.5..<0.8: confidenceLevel = .medium
+        default: confidenceLevel = .low
+        }
+        return ObservedEvent(id: id, kind: kind, timestamp: timestamp, location: "Home · approximate", confidence: confidenceLevel, explanation: explanation ?? "An observation is available for review.", reviewed: status == "reviewed", hasClip: false)
+    }
+}
+private struct BackendObjectsResponse: Decodable { let data: [BackendObject] }
+private struct BackendObject: Decodable {
+    let id: String
+    let label: String
+    let lastSeenAt: Date?
+    let point: BackendPoint?
+    let confidence: Double?
+
+    var object: RoomObject? {
+        guard let id = UUID(uuidString: id) else { return nil }
+        let point = point ?? BackendPoint(x: nil, y: nil)
+        let confidenceLevel: ObservationConfidence
+        switch confidence ?? 0 {
+        case 0.8...: confidenceLevel = .high
+        case 0.5..<0.8: confidenceLevel = .medium
+        default: confidenceLevel = .low
+        }
+        return RoomObject(id: id, name: label, category: "object", position: SIMD3(Float(point.x ?? 0), Float(point.y ?? 0), 0), dimensions: SIMD3(repeating: 0), confidence: confidenceLevel, zoneID: id)
+    }
+}
+private struct BackendPoint: Decodable { let x: Double?; let y: Double? }
+private struct BackendCamerasResponse: Decodable { let data: [BackendCamera] }
+private struct BackendCamera: Decodable { let id: String }
 private struct BackendFamilyMembersResponse: Decodable { let data: [BackendFamilyMember] }
+private struct BackendFamilyMemberMutationResponse: Decodable { let data: BackendFamilyMember; let invalidatedSessions: Int }
 private struct BackendFamilyMember: Decodable {
     let id: String; let displayName: String; let email: String?; let role: String
     var account: CaregiverAccount? {
