@@ -319,6 +319,20 @@ final class OneTests: XCTestCase {
         }
     }
 
+    func testRoomPlanNativeDimensionsGivePlanarSurfacesMinimalThickness() throws {
+        let sanitized = try RoomPlanNormalizer.sanitizedNativeDimensions(SIMD3<Float>(2.4, 0, -0.0005))
+        XCTAssertEqual(sanitized.x, 2.4)
+        XCTAssertEqual(sanitized.y, 0.001)
+        XCTAssertEqual(sanitized.z, 0.001)
+
+        XCTAssertThrowsError(try RoomPlanNormalizer.sanitizedNativeDimensions(SIMD3<Float>(1, -0.01, 1))) { error in
+            XCTAssertEqual(error as? RoomPlanNormalizationError, .invalidDimensions)
+        }
+        XCTAssertThrowsError(try RoomPlanNormalizer.sanitizedNativeDimensions(SIMD3<Float>(1, .nan, 1))) { error in
+            XCTAssertEqual(error as? RoomPlanNormalizationError, .nonFiniteGeometry)
+        }
+    }
+
     func testRoomPlanMetadataAndCaptureErrorsStayNative() throws {
         let metadata = RoomPlanScanMetadata(provenance: "native-roomplan", deviceModel: "iPhone17,1", lidar: true, roomplanVersion: "17", units: "m", upAxis: "Y", geometryType: "3d")
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder.one.encode(metadata)) as? [String: Any])

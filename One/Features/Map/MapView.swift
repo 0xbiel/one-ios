@@ -126,25 +126,7 @@ struct ScanView: View {
                         captureError = error.localizedDescription
                     }
                 }
-                .ignoresSafeArea()
-
-                VStack {
-                    Spacer()
-                    Button {
-                        isCapturing = false
-                    } label: {
-                        Label("Done scanning", systemImage: "checkmark.circle.fill")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(OneTheme.accentBlue)
-                    .foregroundStyle(.white)
-                    .disabled(!isCapturing)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
-                }
+                .ignoresSafeArea(edges: .bottom)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -211,5 +193,17 @@ struct ScanView: View {
         .background(OneTheme.canvas.ignoresSafeArea())
         .navigationTitle("Room scan")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if showCapture && RoomPlanCapability.isSupported {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isCapturing = false
+                    } label: {
+                        Label("Done scanning", systemImage: "checkmark.circle.fill")
+                    }
+                    .disabled(!isCapturing)
+                }
+            }
+        }
     }
 }

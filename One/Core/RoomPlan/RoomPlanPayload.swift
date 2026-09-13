@@ -233,6 +233,28 @@ enum RoomPlanNormalizationError: LocalizedError, Equatable, Sendable {
 }
 
 enum RoomPlanNormalizer {
+    private static let minimumNativeDimension: Float = 0.001
+    private static let nativeDimensionTolerance: Float = 0.001
+
+    /// RoomPlan can report an exactly-zero (or tiny negative from floating point
+    /// noise) thickness for planar surfaces such as walls and floors. The ONE
+    /// wire contract requires positive 3D extents, so give those native planar
+    /// elements a 1 mm thickness while still rejecting materially invalid data.
+    static func sanitizedNativeDimensions(_ value: SIMD3<Float>) throws -> SIMD3<Float> {
+        guard value.x.isFinite, value.y.isFinite, value.z.isFinite else {
+            throw RoomPlanNormalizationError.nonFiniteGeometry
+        }
+
+        func sanitize(_ component: Float) throws -> Float {
+            guard component >= -nativeDimensionTolerance else {
+                throw RoomPlanNormalizationError.invalidDimensions
+            }
+            return max(component, minimumNativeDimension)
+        }
+
+        return SIMD3<Float>(try sanitize(value.x), try sanitize(value.y), try sanitize(value.z))
+    }
+
     static func normalize(_ fixture: RoomPlanCaptureFixture) throws -> RoomPlanNormalizedScan {
         try RoomPlanNormalizedScan(
             roomID: fixture.roomID,
@@ -304,11 +326,11 @@ enum RoomPlanNormalizer {
             let transformed = simd_mul(surface.transform, SIMD4<Float>(corner.x, corner.y, corner.z, 1))
             return SIMD3<Float>(transformed.x, transformed.y, transformed.z)
         }
-        return RoomPlanElementInput(id: surface.identifier, category: category, confidence: confidence(surface.confidence), center: SIMD3<Float>(surface.transform.columns.3.x, surface.transform.columns.3.y, surface.transform.columns.3.z), dimensions: surface.dimensions, transform: surface.transform, vertices: vertices, attributes: attributes)
+        return RoomPlanElementInput(id: surface.identifier, category: category, confidence: confidence(surface.confidence), center: SIMD3<Float>(surface.transform.columns.3.x, surface.transform.columns.3.y, surface.transform.columns.3.z), dimensions: try sanitizedNativeDimensions(surface.dimensions), transform: surface.transform, vertices: vertices, attributes: attributes)
     }
 
     private static func input(from object: CapturedRoom.Object) throws -> RoomPlanElementInput {
-        RoomPlanElementInput(id: object.identifier, category: objectCategory(object.category), confidence: confidence(object.confidence), center: SIMD3<Float>(object.transform.columns.3.x, object.transform.columns.3.y, object.transform.columns.3.z), dimensions: object.dimensions, transform: object.transform, attributes: object.attributes.map(\.shortIdentifier))
+        RoomPlanElementInput(id: object.identifier, category: objectCategory(object.category), confidence: confidence(object.confidence), center: SIMD3<Float>(object.transform.columns.3.x, object.transform.columns.3.y, object.transform.columns.3.z), dimensions: try sanitizedNativeDimensions(object.dimensions), transform: object.transform, attributes: object.attributes.map(\.shortIdentifier))
     }
 
     private static func confidence(_ value: CapturedRoom.Confidence) -> String {
