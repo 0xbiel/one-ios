@@ -27,6 +27,171 @@ struct RoomMapCanvas: View {
 
 struct RoomMapPin: View { let title: String; let color: Color; var body: some View { VStack(spacing: 5) { Circle().fill(color).frame(width: 30, height: 30).overlay(Circle().stroke(.white, lineWidth: 3)).shadow(radius: 6); Text(title).font(.caption.weight(.semibold)).foregroundStyle(OneTheme.ink).padding(.horizontal, 8).padding(.vertical, 4).background(OneTheme.surface, in: Capsule()) } } }
 
-struct MapEvidenceSheet: View { @Bindable var store: AppStore; var body: some View { NavigationStack { ScrollView { VStack(alignment: .leading, spacing: 18) { HStack { VStack(alignment: .leading, spacing: 4) { Text("Home map").font(.largeTitle.weight(.bold)).tracking(-1); Text(store.scene.isRenderable3D ? "Native RoomPlan · metric 3D" : "Approximate locations · local view").font(.subheadline).foregroundStyle(OneTheme.secondaryInk) }; Spacer(); NavigationLink { ScanView(store: store) } label: { Image(systemName: "viewfinder").font(.title3).frame(width: 44, height: 44) }.buttonStyle(.bordered).accessibilityLabel("Update room scan") }; if store.scene.isRenderable3D { SurfaceCard(radius: 20) { Label(store.scene.hasReadyUSDZ ? "LiDAR model available" : "LiDAR geometry available · 3D asset pending", systemImage: store.scene.hasReadyUSDZ ? "cube.fill" : "arrow.triangle.2.circlepath").font(.subheadline.weight(.semibold)).foregroundStyle(OneTheme.accentBlue).padding(16) } } else if store.events.isEmpty { SurfaceCard(radius: 20) { Label("No observations yet", systemImage: "tray").font(.subheadline).foregroundStyle(OneTheme.secondaryInk).padding(16) } } else { LazyVStack(spacing: 0) { ForEach(store.events.prefix(3)) { event in EventRow(event: event); if event.id != store.events.prefix(3).last?.id { Divider() } } } } }.padding(20) }.background(.regularMaterial).navigationBarTitleDisplayMode(.inline) } } }
+struct MapEvidenceSheet: View {
+    @Bindable var store: AppStore
 
-struct ScanView: View { @Bindable var store: AppStore; @Environment(\.dismiss) private var dismiss; @State private var isCapturing = false; @State private var showCapture = false; @State private var captureError: String?; var body: some View { ZStack { if showCapture && RoomPlanCapability.isSupported { RoomPlanCaptureView(isCapturing: $isCapturing) { result in isCapturing = false; showCapture = false; switch result { case let .success(room): Task { await store.uploadRoomPlan(room); if store.authError == nil { dismiss() } }; case let .failure(error): captureError = error.localizedDescription } }.ignoresSafeArea() } else { VStack(alignment: .leading, spacing: 18) { Text("Refresh the home map").font(.system(size: 36, weight: .bold, design: .rounded)).tracking(-1); if store.isRoomPlanUploading { ProgressView("Uploading native RoomPlan scan…").tint(OneTheme.accentBlue); Text("ONE is saving the structured metric scene first, then attaching the USDZ model.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk) } else if RoomPlanCapability.isSupported { Text("Walk slowly around the room. ONE uses the native LiDAR scan to create a metric 3D scene; Safari and unsupported devices remain 2D.").foregroundStyle(OneTheme.secondaryInk); Button { captureError = nil; showCapture = true; isCapturing = true } label: { Label("Start LiDAR scan", systemImage: "viewfinder") }.buttonStyle(.borderedProminent).tint(OneTheme.accentBlue).foregroundStyle(.white) } else { Label("LiDAR is not available on this device.", systemImage: "iphone.slash").font(.headline); Text("You can still use ONE with a simple caregiver-created zone map. This device cannot unlock the native 3D path.").foregroundStyle(OneTheme.secondaryInk); Button("Create zones manually") { dismiss() }.buttonStyle(.bordered) }; if let captureError { Text(captureError).font(.footnote).foregroundStyle(.red) }; if let authError = store.authError { Text(authError).font(.footnote).foregroundStyle(.red) }; Spacer() }.padding(24) } }.background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Room scan").navigationBarTitleDisplayMode(.inline) } }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Home map").font(.largeTitle.weight(.bold)).tracking(-1)
+                            Text(store.scene.isRenderable3D ? "Native RoomPlan · metric 3D" : "Approximate locations · local view")
+                                .font(.subheadline)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                        }
+                        Spacer()
+                        NavigationLink { ScanView(store: store) } label: {
+                            Image(systemName: "viewfinder").font(.title3).frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Update room scan")
+                    }
+
+                    if store.scene.isRenderable3D {
+                        SurfaceCard(radius: 20) {
+                            Label(store.scene.hasReadyUSDZ ? "LiDAR model available" : "LiDAR geometry available · 3D asset pending", systemImage: store.scene.hasReadyUSDZ ? "cube.fill" : "arrow.triangle.2.circlepath")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(OneTheme.accentBlue)
+                                .padding(16)
+                        }
+                        CameraRegistrationStatusCard(registration: store.scene.cameraRegistration)
+                    } else if store.events.isEmpty {
+                        SurfaceCard(radius: 20) {
+                            Label("No observations yet", systemImage: "tray").font(.subheadline).foregroundStyle(OneTheme.secondaryInk).padding(16)
+                        }
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(store.events.prefix(3)) { event in
+                                EventRow(event: event)
+                                if event.id != store.events.prefix(3).last?.id { Divider() }
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(.regularMaterial)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+private struct CameraRegistrationStatusCard: View {
+    let registration: CameraRegistrationDescriptor?
+
+    var body: some View {
+        let state = registration?.status ?? .unavailable
+        SurfaceCard(radius: 20) {
+            HStack(spacing: 12) {
+                Image(systemName: state == .positioned ? "camera.viewfinder" : "camera.badge.ellipsis")
+                    .foregroundStyle(state == .positioned ? OneTheme.accentBlue : OneTheme.secondaryInk)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(state == .positioned ? "Camera positioned" : state == .needsRescan ? "Camera needs another setup scan" : "Camera position unavailable")
+                        .font(.subheadline.weight(.semibold))
+                    Text(state == .positioned ? "Placed in the RoomPlan coordinate frame." : "Finish a LiDAR scan with the paired camera held still in its final position.")
+                        .font(.caption)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+            }
+            .padding(16)
+        }
+    }
+}
+
+struct ScanView: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var isCapturing = false
+    @State private var showCapture = false
+    @State private var captureError: String?
+    @State private var selectedCameraID: UUID?
+
+    var body: some View {
+        ZStack {
+            if showCapture && RoomPlanCapability.isSupported {
+                RoomPlanCaptureView(isCapturing: $isCapturing) { result in
+                    isCapturing = false
+                    showCapture = false
+                    switch result {
+                    case let .success(capture):
+                        Task {
+                            await store.uploadRoomPlan(capture, cameraID: selectedCameraID)
+                            if store.authError == nil && (selectedCameraID == nil || store.scene.cameraRegistration?.status == .positioned) {
+                                dismiss()
+                            }
+                        }
+                    case let .failure(error):
+                        captureError = error.localizedDescription
+                    }
+                }
+                .ignoresSafeArea()
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        Text("Refresh the home map")
+                            .font(.system(size: 36, weight: .bold, design: .rounded))
+                            .tracking(-1)
+                        Text("Scan the room, then finish with this iPhone held still where the camera will remain. ONE can place that same paired camera inside the LiDAR model.")
+                            .foregroundStyle(OneTheme.secondaryInk)
+
+                        if !store.pairedCameras.isEmpty {
+                            SurfaceCard(radius: 22) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("Camera to position").font(.headline)
+                                    Picker("Camera to position", selection: $selectedCameraID) {
+                                        Text("Map only").tag(UUID?.none)
+                                        ForEach(store.pairedCameras) { camera in
+                                            Text(camera.name).tag(UUID?.some(camera.id))
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    Text("Choose a camera only if this iPhone is the same physical device that was paired in Safari.")
+                                        .font(.footnote)
+                                        .foregroundStyle(OneTheme.secondaryInk)
+                                }
+                                .padding(18)
+                            }
+                        }
+
+                        if store.isRoomPlanUploading {
+                            ProgressView("Saving RoomPlan scan…").tint(OneTheme.accentBlue)
+                            Text("The 3D map is saved even if camera positioning needs another scan.")
+                                .font(.subheadline)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                        } else if RoomPlanCapability.isSupported {
+                            Button {
+                                captureError = nil
+                                showCapture = true
+                                isCapturing = true
+                            } label: {
+                                Label("Start LiDAR scan", systemImage: "viewfinder")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(OneTheme.accentBlue)
+                            .foregroundStyle(.white)
+                        } else {
+                            Label("LiDAR is not available on this device.", systemImage: "iphone.slash").font(.headline)
+                            Text("You can still use ONE with a caregiver-created zone map, but automatic camera placement requires a LiDAR-capable iPhone or iPad.")
+                                .foregroundStyle(OneTheme.secondaryInk)
+                            Button("Create zones manually") { dismiss() }.buttonStyle(.bordered)
+                        }
+
+                        if let registration = store.scene.cameraRegistration, store.scene.isRenderable3D {
+                            CameraRegistrationStatusCard(registration: registration)
+                        }
+                        if let captureError { Text(captureError).font(.footnote).foregroundStyle(.red) }
+                        if let authError = store.authError { Text(authError).font(.footnote).foregroundStyle(.red) }
+                        if let mapError = store.roomPlanModelError { Text(mapError).font(.footnote).foregroundStyle(OneTheme.secondaryInk) }
+                    }
+                    .padding(24)
+                }
+            }
+        }
+        .background(OneTheme.canvas.ignoresSafeArea())
+        .navigationTitle("Room scan")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}

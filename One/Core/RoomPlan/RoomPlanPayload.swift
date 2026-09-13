@@ -5,6 +5,20 @@ import Darwin
 
 let roomPlanSchemaVersion = "roomplan-normalized.v1"
 
+enum RoomPlanMatrix {
+    static func rowMajor(_ value: simd_float4x4) throws -> [[Double]] {
+        let columns = value.columns
+        let result = [
+            [Double(columns.0.x), Double(columns.1.x), Double(columns.2.x), Double(columns.3.x)],
+            [Double(columns.0.y), Double(columns.1.y), Double(columns.2.y), Double(columns.3.y)],
+            [Double(columns.0.z), Double(columns.1.z), Double(columns.2.z), Double(columns.3.z)],
+            [Double(columns.0.w), Double(columns.1.w), Double(columns.2.w), Double(columns.3.w)]
+        ]
+        guard result.flatMap({ $0 }).allSatisfy(\.isFinite) else { throw RoomPlanNormalizationError.nonFiniteGeometry }
+        return result
+    }
+}
+
 struct RoomPlanPoint3D: Codable, Sendable, Equatable {
     let x: Double
     let y: Double
@@ -264,25 +278,13 @@ enum RoomPlanNormalizer {
         let center = try RoomPlanPoint3D(input.center)
         let dimensions = try RoomPlanDimensions3D(input.dimensions)
         let vertices = try input.vertices.map(RoomPlanPoint3D.init)
-        let transform = try matrix(input.transform)
+        let transform = try RoomPlanMatrix.rowMajor(input.transform)
         return try RoomPlanElement(id: input.id.uuidString, category: input.category, confidence: input.confidence, center: center, dimensions: dimensions, transform: transform, vertices: vertices, attributes: input.attributes)
     }
 
     private static func normalizeSection(_ input: RoomPlanSectionInput) throws -> RoomPlanSection {
         guard input.story >= 0 else { throw RoomPlanNormalizationError.invalidGeometry }
         return RoomPlanSection(id: input.id.uuidString, label: input.label, center: try RoomPlanPoint3D(input.center), story: input.story)
-    }
-
-    private static func matrix(_ value: simd_float4x4) throws -> [[Double]] {
-        let columns = value.columns
-        let result = [
-            [Double(columns.0.x), Double(columns.1.x), Double(columns.2.x), Double(columns.3.x)],
-            [Double(columns.0.y), Double(columns.1.y), Double(columns.2.y), Double(columns.3.y)],
-            [Double(columns.0.z), Double(columns.1.z), Double(columns.2.z), Double(columns.3.z)],
-            [Double(columns.0.w), Double(columns.1.w), Double(columns.2.w), Double(columns.3.w)]
-        ]
-        guard result.flatMap({ $0 }).allSatisfy(\.isFinite) else { throw RoomPlanNormalizationError.nonFiniteGeometry }
-        return result
     }
 
     private static func input(from surface: CapturedRoom.Surface) throws -> RoomPlanElementInput {

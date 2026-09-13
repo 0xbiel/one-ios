@@ -14,9 +14,15 @@ enum RoomPlanCaptureError: LocalizedError, Sendable, Equatable {
     }
 }
 
+struct RoomPlanCaptureResult {
+    let room: CapturedRoom
+    let cameraToWorld: simd_float4x4?
+    let trackingState: String
+}
+
 struct RoomPlanCaptureView: UIViewRepresentable {
     @Binding var isCapturing: Bool
-    var onComplete: @MainActor @Sendable (Result<CapturedRoom, RoomPlanCaptureError>) -> Void
+    var onComplete: @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onComplete: onComplete) }
 
@@ -38,13 +44,22 @@ struct RoomPlanCaptureView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, RoomCaptureSessionDelegate {
-        let onComplete: @MainActor @Sendable (Result<CapturedRoom, RoomPlanCaptureError>) -> Void
+        let onComplete: @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void
         var hasStarted = false
-        init(onComplete: @escaping @MainActor @Sendable (Result<CapturedRoom, RoomPlanCaptureError>) -> Void) { self.onComplete = onComplete }
+        init(onComplete: @escaping @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void) { self.onComplete = onComplete }
 
         func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
             let completion = onComplete
             let capturedData = data
+            let frame = session.arSession.currentFrame
+            let cameraToWorld = frame?.camera.transform
+            let trackingState: String
+            switch frame?.camera.trackingState {
+            case .normal: trackingState = "normal"
+            case .limited: trackingState = "limited"
+            case .notAvailable, .none: trackingState = "unavailable"
+            @unknown default: trackingState = "unavailable"
+            }
             Task { @MainActor in
                 if let error {
                     completion(.failure(.captureFailed(error.localizedDescription)))
@@ -52,7 +67,7 @@ struct RoomPlanCaptureView: UIViewRepresentable {
                 }
                 do {
                     let room = try await RoomBuilder(options: []).capturedRoom(from: capturedData)
-                    completion(.success(room))
+                    completion(.success(RoomPlanCaptureResult(room: room, cameraToWorld: cameraToWorld, trackingState: trackingState)))
                 } catch {
                     completion(.failure(.captureFailed(error.localizedDescription)))
                 }

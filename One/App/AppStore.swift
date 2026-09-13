@@ -53,6 +53,7 @@ final class AppStore {
     var isRoomPlanModelLoading = false
     var roomPlanModelError: String?
     var careRecipients: [CareRecipient] = []
+    var pairedCameras: [PairedCamera] = []
     var cameraCount = 0
     private var pendingRoomPlanMapID: UUID?
     private var pendingRoomPlanUSDZData: Data?
@@ -310,7 +311,13 @@ final class AppStore {
             let objects = try await apiClient.roomObjects(homeID: session.homeID)
             scan = RoomScan(id: scan.id, schemaVersion: scan.schemaVersion, capturedAt: scan.capturedAt, units: scan.units, upAxis: scan.upAxis, objects: objects, zones: scan.zones, artifactHash: scan.artifactHash, exportedUSDZName: scan.exportedUSDZName)
         } catch { scan = .empty }
-        do { cameraCount = try await apiClient.cameraCount(homeID: session.homeID) } catch { cameraCount = 0 }
+        do {
+            pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+            cameraCount = pairedCameras.count
+        } catch {
+            pairedCameras = []
+            cameraCount = 0
+        }
         await refreshScene()
         await refreshFamilyData()
     }
@@ -332,7 +339,7 @@ final class AppStore {
         }
     }
 
-    func uploadRoomPlan(_ capturedRoom: CapturedRoom) async {
+    func uploadRoomPlan(_ capture: RoomPlanCaptureResult, cameraID: UUID?) async {
         guard !runtimeConfiguration.isDemoMode, let session else { return }
         guard RoomPlanCapability.isSupported else {
             authError = RoomPlanCaptureError.unsupportedDevice.localizedDescription
@@ -347,19 +354,47 @@ final class AppStore {
         defer { isRoomPlanUploading = false }
 
         do {
-            let artifact = try RoomPlanArtifactBuilder.build(from: capturedRoom)
+            let artifact = try RoomPlanArtifactBuilder.build(from: capture.room)
             artifactData = artifact.usdzData
             let map = try await apiClient.uploadRoomPlan(roomID: nil, scan: artifact.scan, metadata: artifact.metadata)
             uploadedMapID = map.mapID
             pendingRoomPlanMapID = map.mapID
             pendingRoomPlanUSDZData = artifact.usdzData
+
+            if let cameraID {
+                do {
+                    guard let cameraToWorld = capture.cameraToWorld else {
+                        throw RoomPlanCaptureError.captureFailed("Camera tracking was unavailable at the end of the scan. Keep the camera still in its final position and scan again.")
+                    }
+                    let matrix = try RoomPlanMatrix.rowMajor(cameraToWorld)
+                    _ = try await apiClient.registerRoomPlanCamera(
+                        homeID: session.homeID,
+                        request: RoomPlanCameraRegistrationRequest(
+                            cameraID: cameraID,
+                            mapID: map.mapID,
+                            cameraToWorld: matrix,
+                            confidence: nil,
+                            trackingState: capture.trackingState
+                        )
+                    )
+                } catch {
+                    roomPlanModelError = (error as? LocalizedError)?.errorDescription ?? "The room map was saved, but the camera position needs another setup scan."
+                }
+            }
+
             let attachment = try await apiClient.uploadRoomPlanUSDZ(mapID: map.mapID, data: artifact.usdzData)
             pendingRoomPlanMapID = nil
             pendingRoomPlanUSDZData = nil
             mapUploadResult = ArtifactUploadResponse(artifactID: map.mapID, sha256: attachment.usdz?.sha256 ?? "", expiresAt: nil)
             try cacheRoomPlanModel(mapID: map.mapID, data: artifact.usdzData)
             scene = try await apiClient.refreshScene(homeID: session.homeID)
-            roomPlanModelError = scene.isRenderable3D ? nil : "The uploaded scan is not ready to display yet."
+            if scene.cameraRegistration?.status == .needsRescan {
+                roomPlanModelError = "The 3D room map is saved. Keep this device still in the camera's final position and run one more setup scan to position it."
+            } else if scene.isRenderable3D {
+                roomPlanModelError = nil
+            } else if !scene.isRenderable3D {
+                roomPlanModelError = "The uploaded scan is not ready to display yet."
+            }
         } catch {
             if let uploadedMapID, let artifactData {
                 pendingRoomPlanMapID = uploadedMapID
@@ -566,6 +601,7 @@ final class AppStore {
             careRecipients = []
             medicationDoses = []
             medicationPlans = []
+            pairedCameras = []
             cameraCount = 0
             assistantMessages = []
         }
@@ -672,6 +708,7 @@ final class AppStore {
                 careRecipients = []
                 medicationDoses = []
                 medicationPlans = []
+                pairedCameras = []
                 cameraCount = 0
                 assistantMessages = []
             }

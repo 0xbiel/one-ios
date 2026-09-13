@@ -145,6 +145,30 @@ struct USDZAsset: Codable, Sendable, Equatable {
     let downloadPath: String?
 }
 
+struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
+    let id: UUID
+    let name: String
+    let roomID: UUID?
+    let status: String
+}
+
+enum CameraRegistrationState: String, Codable, Sendable, Equatable {
+    case positioned
+    case needsRescan = "needs_rescan"
+    case unavailable
+}
+
+struct CameraRegistrationDescriptor: Codable, Sendable, Equatable {
+    let status: CameraRegistrationState
+    let cameraID: UUID?
+    let mapID: UUID?
+    let coordinateFrame: String
+    let cameraToWorld: [[Double]]?
+    let confidence: Double?
+    let trackingState: String?
+    let source: String
+}
+
 struct SceneDescriptor: Decodable, Sendable, Equatable {
     let sceneID: UUID?
     let mapID: UUID?
@@ -157,6 +181,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
     let geometryStatus: String
     let rescanRequired: Bool
     let coordinateFrame: String?
+    let cameraRegistration: CameraRegistrationDescriptor?
     let canonicalGeometry: RoomPlanNormalizedScan?
     let geometry: RoomPlanNormalizedScan?
     let usdz: USDZAsset?
@@ -171,7 +196,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         SceneDescriptor(sceneID: nil, mapID: nil, version: 0, dimension: .twoD, source: .legacy2D, provenance: "legacy-2d", approximate: true, metricScaleKnown: false, geometryStatus: "empty", rescanRequired: true, coordinateFrame: nil, geometry: nil, usdz: nil)
     }
 
-    init(sceneID: UUID?, mapID: UUID?, version: Int, dimension: MapDimension, source: MapSource, provenance: String, approximate: Bool, metricScaleKnown: Bool, geometryStatus: String, rescanRequired: Bool, coordinateFrame: String?, geometry: RoomPlanNormalizedScan?, usdz: USDZAsset?) {
+    init(sceneID: UUID?, mapID: UUID?, version: Int, dimension: MapDimension, source: MapSource, provenance: String, approximate: Bool, metricScaleKnown: Bool, geometryStatus: String, rescanRequired: Bool, coordinateFrame: String?, cameraRegistration: CameraRegistrationDescriptor? = nil, geometry: RoomPlanNormalizedScan?, usdz: USDZAsset?) {
         self.sceneID = sceneID
         self.mapID = mapID
         self.version = version
@@ -183,6 +208,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         self.geometryStatus = geometryStatus
         self.rescanRequired = rescanRequired
         self.coordinateFrame = coordinateFrame
+        self.cameraRegistration = cameraRegistration
         self.canonicalGeometry = geometry
         self.geometry = geometry
         self.usdz = usdz
@@ -193,7 +219,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         case mapID = "mapId"
         case version, dimension, source, provenance, approximate
         case metricScaleKnown, geometryStatus, rescanRequired
-        case coordinateFrame, canonicalGeometry, geometry, usdz
+        case coordinateFrame, cameraRegistration, canonicalGeometry, geometry, usdz
     }
 
     init(from decoder: Decoder) throws {
@@ -209,6 +235,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         geometryStatus = try container.decodeIfPresent(String.self, forKey: .geometryStatus) ?? "empty"
         rescanRequired = try container.decodeIfPresent(Bool.self, forKey: .rescanRequired) ?? false
         coordinateFrame = try container.decodeIfPresent(String.self, forKey: .coordinateFrame)
+        cameraRegistration = try? container.decode(CameraRegistrationDescriptor.self, forKey: .cameraRegistration)
         canonicalGeometry = try? container.decode(RoomPlanNormalizedScan.self, forKey: .canonicalGeometry)
         geometry = canonicalGeometry ?? (try? container.decode(RoomPlanNormalizedScan.self, forKey: .geometry))
         usdz = try container.decodeIfPresent(USDZAsset.self, forKey: .usdz)
