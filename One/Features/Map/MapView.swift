@@ -30,7 +30,7 @@ struct MapView: View {
             showEvidence = true
             while !Task.isCancelled {
                 await store.refreshMapData()
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
