@@ -3,13 +3,21 @@ import SwiftUI
 struct CaregiverShell: View {
     @Bindable var store: AppStore
     var body: some View {
-        TabView(selection: $store.selectedTab) {
-            HomeView(store: store).tabItem { Label("Home", systemImage: "house.fill") }.tag("overview")
-            MapView(store: store).tabItem { Label("Map", systemImage: "map.fill") }.tag("map")
-            FamilyView(store: store).tabItem { Label("Family", systemImage: "person.2.fill") }.tag("family")
-            EventsView(store: store).tabItem { Label("Events", systemImage: "bell") }.tag("events")
-            SettingsView(store: store).tabItem { Label("Account", systemImage: "person.crop.circle") }.tag("settings")
-        }.toolbarBackground(.visible, for: .tabBar).toolbarBackground(.regularMaterial, for: .tabBar)
+        Group {
+            if store.selectedTab == "map" {
+                MapView(store: store)
+            } else {
+                TabView(selection: $store.selectedTab) {
+                    HomeView(store: store).tabItem { Label("Home", systemImage: "house.fill") }.tag("overview")
+                    Color.clear.tabItem { Label("Map", systemImage: "map.fill") }.tag("map")
+                    FamilyView(store: store).tabItem { Label("Family", systemImage: "person.2.fill") }.tag("family")
+                    EventsView(store: store).tabItem { Label("Events", systemImage: "bell") }.tag("events")
+                    SettingsView(store: store).tabItem { Label("Account", systemImage: "person.crop.circle") }.tag("settings")
+                }
+                .toolbarBackground(.visible, for: .tabBar)
+                .toolbarBackground(.regularMaterial, for: .tabBar)
+            }
+        }
     }
 }
 
@@ -28,6 +36,7 @@ struct HomeView: View {
     @Bindable var store: AppStore
     @State private var selectedPill = "Today"
     @State private var showCameraSetup = false
+    @State private var showCareSpaces = false
     private let pills = ["Today", "Objects", "Cameras", "Check-in"]
     var body: some View {
         NavigationStack {
@@ -38,12 +47,35 @@ struct HomeView: View {
                         Text("Your home, in view.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.4).foregroundStyle(OneTheme.ink)
                         Text("A calm, human-readable picture of today.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
                     }
+                    CareSpaceContextButton(space: store.activeCareSpace, isLoading: store.isCareSpacesLoading) {
+                        showCareSpaces = true
+                    }
                     if store.runtimeConfiguration.isDemoMode { cameraHero } else { liveCameraHero }
                     ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 10) { ForEach(pills, id: \.self) { pill in Button { withAnimation(.snappy) { selectedPill = pill } } label: { Text(pill).font(.subheadline.weight(.semibold)).foregroundStyle(selectedPill == pill ? .white : OneTheme.ink).padding(.horizontal, 18).frame(height: 44).background(selectedPill == pill ? OneTheme.accentBlue : OneTheme.surface, in: Capsule()).overlay { if selectedPill != pill { Capsule().stroke(OneTheme.secondaryInk.opacity(0.3), lineWidth: 0.75) } } }.buttonStyle(.plain).accessibilityAddTraits(selectedPill == pill ? .isSelected : []) } } }.scrollIndicators(.hidden)
                     if store.runtimeConfiguration.isDemoMode { contentForPill } else { liveContentForPill }
                 }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 34)
-            }.background(OneTheme.canvas.ignoresSafeArea()).safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }.toolbar(.hidden, for: .navigationBar)
+            }
+            .refreshable {
+                await store.refreshCareSpaces()
+                await store.refreshLiveData()
+            }
+            .background(OneTheme.canvas.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
+            .toolbar(.hidden, for: .navigationBar)
         }
+        .sheet(isPresented: $showCareSpaces) {
+            CareSpaceSwitcherView(store: store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+#if DEBUG
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-one-show-care-spaces")
+                || ProcessInfo.processInfo.arguments.contains("-one-show-care-space-create") {
+                showCareSpaces = true
+            }
+        }
+#endif
     }
     private var cameraHero: some View { ZStack(alignment: .bottomLeading) { RoundedRectangle(cornerRadius: 30, style: .continuous).fill(LinearGradient(colors: [OneTheme.inverseSurface, OneTheme.accentBlue.opacity(0.82)], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 236); VStack { HStack { Label("LIVING ROOM CAMERA", systemImage: "video.fill").font(.caption.weight(.bold)).tracking(0.7).foregroundStyle(.white.opacity(0.9)); Spacer(); HStack(spacing: 6) { Circle().fill(OneTheme.accentCyan).frame(width: 9, height: 9); Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(.white) } }; Spacer(); Image(systemName: "camera.metering.center.weighted.average").font(.system(size: 76, weight: .thin)).foregroundStyle(.white.opacity(0.42)); Spacer(); HStack { Text("A steady view of the room").font(.title3.weight(.semibold)).foregroundStyle(.white); Spacer(); Image(systemName: "arrow.up.right").foregroundStyle(.white) } }.padding(20) }.accessibilityElement(children: .combine).accessibilityLabel("Living room camera, live. A steady view of the room.") }
     private var primaryLiveCamera: PairedCamera? { store.pairedCameras.first }
@@ -97,6 +129,8 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showCameraSetup) {
             CameraPairingSheet(store: store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
         }
     }
     private var liveCheckInSection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("CHECK-IN", "A human signal"); if let event = store.events.first(where: { $0.kind == .checkIn }) { EventRow(event: event) } else { liveEmptyCard(title: "No check-in recorded", detail: "A check-in will appear here after the backend records one.", symbol: "checkmark.circle") } } }
@@ -114,95 +148,72 @@ struct HomeView: View {
 private struct CameraPairingSheet: View {
     @Bindable var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var label = "Room camera"
+    @State private var step: Step = .details
+    @State private var validationMessage: String?
+    @FocusState private var isNameFocused: Bool
+
+    private enum Step: Int, CaseIterable {
+        case details
+        case connect
+    }
 
     private var status: String { store.cameraPairingStatus?.status ?? (store.cameraPairingChallenge == nil ? "not started" : "pending") }
+    private var isConnected: Bool { status == "connected" }
+    private var isExpired: Bool { status == "expired" }
+    private var normalizedLabel: String {
+        let value = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? "Room camera" : value
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("PAIR A REAL CAMERA")
-                            .font(.caption.weight(.bold))
-                            .tracking(1.1)
-                            .foregroundStyle(OneTheme.accentBlue)
-                        Text("Connect a room camera.")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                            .foregroundStyle(OneTheme.ink)
-                        Text("Generate a one-time publisher code here, then enter it on the phone or laptop that will stay in the room. This screen checks the backend until that device is actually connected.")
-                            .font(.body)
-                            .foregroundStyle(OneTheme.secondaryInk)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+            GeometryReader { proxy in
+                let contentWidth = min(max(proxy.size.width - 40, 1), 520)
 
-                    if let challenge = store.cameraPairingChallenge {
-                        SurfaceCard(radius: 24) {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("ONE-TIME CAMERA CODE")
-                                    .font(.caption.weight(.bold))
-                                    .tracking(1)
-                                    .foregroundStyle(OneTheme.secondaryInk)
-                                Text(challenge.pairingCode)
-                                    .font(.system(size: 42, weight: .bold, design: .monospaced))
-                                    .tracking(5)
-                                    .foregroundStyle(OneTheme.ink)
-                                    .accessibilityLabel("Camera pairing code \(challenge.pairingCode)")
-                                Label(status == "connected" ? "Camera connected" : status == "expired" ? "Code expired" : "Waiting for camera", systemImage: status == "connected" ? "checkmark.circle.fill" : status == "expired" ? "clock.badge.exclamationmark" : "dot.radiowaves.left.and.right")
-                                    .font(.headline)
-                                    .foregroundStyle(status == "connected" ? OneTheme.mint : status == "expired" ? OneTheme.amber : OneTheme.accentBlue)
-                                Text("Code expires in about \(max(1, challenge.expiresInSeconds / 60)) minutes and can be used once.")
-                                    .font(.caption)
-                                    .foregroundStyle(OneTheme.secondaryInk)
-                            }
-                            .padding(18)
-                        }
-                        if status == "expired" {
-                            Button("Generate a new code") {
-                                store.clearCameraPairing()
-                                Task { await store.startCameraPairing(label: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Room camera" : label) }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(OneTheme.accentBlue)
-                        }
-                    } else {
-                        SurfaceCard(radius: 24) {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Camera name").font(.caption.weight(.semibold)).foregroundStyle(OneTheme.secondaryInk)
-                                TextField("Room camera", text: $label)
-                                    .textFieldStyle(.roundedBorder)
-                                Button {
-                                    Task { await store.startCameraPairing(label: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Room camera" : label) }
-                                } label: {
-                                    if store.isCameraPairingBusy {
-                                        ProgressView().frame(maxWidth: .infinity)
-                                    } else {
-                                        Label("Generate pairing code", systemImage: "qrcode").frame(maxWidth: .infinity)
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(OneTheme.accentBlue)
-                                .disabled(store.isCameraPairingBusy)
-                            }
-                            .padding(18)
-                        }
-                    }
+                VStack(spacing: 0) {
+                    pairingHeader
+                        .frame(width: contentWidth)
+                        .frame(maxWidth: .infinity)
 
-                    if let error = store.cameraPairingError {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(OneTheme.amber)
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            pairingHero
+                                .padding(.top, 28)
+
+                            stepContent
+                                .padding(.top, 22)
+
+                            if let message = validationMessage ?? store.cameraPairingError {
+                                Label(message, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.footnote)
+                                    .foregroundStyle(OneTheme.amber)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(14)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(OneTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                    .padding(.top, 16)
+                            }
+                        }
+                        .frame(width: contentWidth, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 18)
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: step)
                     }
                 }
-                .padding(20)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    pairingFooter
+                        .frame(width: contentWidth)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 10)
+                        .padding(.bottom, 8)
+                }
             }
-            .background(OneTheme.canvas.ignoresSafeArea())
-            .navigationTitle("Camera setup")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
+            .background(OneBackground())
+            .toolbar(.hidden, for: .navigationBar)
         }
+        .interactiveDismissDisabled(store.isCameraPairingBusy)
         .task(id: store.cameraPairingChallenge?.pairingID) {
             guard store.cameraPairingChallenge != nil else { return }
             while !Task.isCancelled {
@@ -212,6 +223,340 @@ private struct CameraPairingSheet: View {
             }
         }
         .onDisappear { store.clearCameraPairing() }
+    }
+
+    private var pairingHeader: some View {
+        HStack(spacing: 10) {
+            OneBrandMark(compact: true)
+
+            Spacer()
+
+            Text("PAIR CAMERA \(step.rawValue + 1) OF \(Step.allCases.count)")
+                .font(.caption2.weight(.semibold))
+                .tracking(0.8)
+                .foregroundStyle(OneTheme.secondaryInk)
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(OneTheme.ink)
+                    .frame(width: 38, height: 38)
+                    .background(OneTheme.surface, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(OneTheme.secondaryInk.opacity(0.14), lineWidth: 0.75)
+                            .allowsHitTesting(false)
+                    }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close camera setup")
+        }
+        .padding(.top, 14)
+    }
+
+    private var pairingHero: some View {
+        HStack {
+            Image(systemName: step == .details ? "video.badge.plus" : (isConnected ? "checkmark.circle.fill" : "qrcode"))
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(isConnected ? OneTheme.mint : OneTheme.accentBlue)
+                .frame(width: 68, height: 68)
+                .background((isConnected ? OneTheme.mint : OneTheme.accentBlue).opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch step {
+        case .details:
+            detailsStep
+        case .connect:
+            connectStep
+        }
+    }
+
+    private var detailsStep: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("SET UP A ROOM CAMERA")
+                .font(.caption.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(OneTheme.accentBlue)
+
+            Text("Which camera are you pairing?")
+                .font(.system(size: 30, weight: .semibold))
+                .tracking(-0.9)
+                .foregroundStyle(OneTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 7)
+
+            Text("Give the device a clear name. On the next step, ONE will create a one-time code for the phone or laptop that will stay in the room.")
+                .font(.body)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 9)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Camera name")
+                    .font(.headline)
+                    .foregroundStyle(OneTheme.ink)
+
+                TextField("Room camera", text: $label)
+                    .focused($isNameFocused)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .submitLabel(.continue)
+                    .font(.body)
+                    .foregroundStyle(OneTheme.ink)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 50)
+                    .background(OneTheme.controlFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(isNameFocused ? OneTheme.accentBlue.opacity(0.55) : OneTheme.secondaryInk.opacity(0.12), lineWidth: 0.75)
+                            .allowsHitTesting(false)
+                    }
+                    .onSubmit { beginPairing() }
+                    .accessibilityIdentifier("camera-pairing-name")
+
+                Label("This pairs a camera publisher only. It does not sign anyone into this care space.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(OneTheme.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16)
+            .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(OneTheme.secondaryInk.opacity(0.12), lineWidth: 0.75)
+                    .allowsHitTesting(false)
+            }
+            .padding(.top, 22)
+        }
+    }
+
+    private var connectStep: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(isConnected ? "CAMERA CONNECTED" : "CONNECT THE CAMERA")
+                .font(.caption.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(isConnected ? OneTheme.mint : OneTheme.accentBlue)
+
+            Text(isConnected ? "Your camera is ready." : "Enter this code on the camera.")
+                .font(.system(size: 30, weight: .semibold))
+                .tracking(-0.9)
+                .foregroundStyle(OneTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 7)
+
+            Text(isConnected
+                 ? "ONE confirmed the publisher connection. The camera now appears with your other connected devices, and viewing remains consent-based."
+                 : "Keep this sheet open while you enter the code on the phone or laptop that will stay in the room. ONE checks the connection automatically.")
+                .font(.body)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 9)
+
+            if let challenge = store.cameraPairingChallenge {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("ONE-TIME CAMERA CODE")
+                        .font(.caption.weight(.bold))
+                        .tracking(1)
+                        .foregroundStyle(OneTheme.secondaryInk)
+
+                    Text(challenge.pairingCode)
+                        .font(.system(size: 42, weight: .bold, design: .monospaced))
+                        .tracking(5)
+                        .foregroundStyle(OneTheme.ink)
+                        .minimumScaleFactor(0.72)
+                        .lineLimit(1)
+                        .accessibilityLabel("Camera pairing code \(challenge.pairingCode)")
+
+                    Label(
+                        isConnected ? "Camera connected" : (isExpired ? "Code expired" : "Waiting for camera"),
+                        systemImage: isConnected ? "checkmark.circle.fill" : (isExpired ? "clock.badge.exclamationmark" : "dot.radiowaves.left.and.right")
+                    )
+                    .font(.headline)
+                    .foregroundStyle(isConnected ? OneTheme.mint : (isExpired ? OneTheme.amber : OneTheme.accentBlue))
+
+                    Text("Code expires in about \(max(1, challenge.expiresInSeconds / 60)) minutes and can be used once.")
+                        .font(.caption)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+                .padding(18)
+                .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke((isConnected ? OneTheme.mint : OneTheme.secondaryInk).opacity(isConnected ? 0.34 : 0.12), lineWidth: 0.75)
+                        .allowsHitTesting(false)
+                }
+                .padding(.top, 22)
+
+                if !isConnected {
+                    VStack(alignment: .leading, spacing: 13) {
+                        pairingInstruction(number: "1", text: "Open the ONE camera pairing page on the device that will stay in the room.")
+                        pairingInstruction(number: "2", text: "Enter the six-digit code above and allow camera access on that device.")
+                        pairingInstruction(number: "3", text: "Wait here until ONE confirms that the publisher is connected.")
+                    }
+                    .padding(16)
+                    .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(OneTheme.secondaryInk.opacity(0.12), lineWidth: 0.75)
+                            .allowsHitTesting(false)
+                    }
+                    .padding(.top, 14)
+                }
+            }
+        }
+    }
+
+    private func pairingInstruction(number: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(OneTheme.accentBlue)
+                .frame(width: 28, height: 28)
+                .background(OneTheme.accentBlue.opacity(0.10), in: Circle())
+
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var pairingFooter: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 7) {
+                ForEach(Step.allCases, id: \.rawValue) { item in
+                    Capsule()
+                        .fill(item == step ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.20))
+                        .frame(width: item == step ? 24 : 7, height: 7)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
+
+            HStack(spacing: 12) {
+                if step != .details {
+                    Button(action: goBack) {
+                        Image(systemName: "arrow.left")
+                            .frame(width: 54, height: 54)
+                    }
+                    .buttonStyle(OneSecondaryButtonStyle())
+                    .accessibilityLabel("Back")
+                    .accessibilityIdentifier("camera-pairing-back")
+                }
+
+                Button(action: primaryAction) {
+                    HStack {
+                        Text(primaryButtonTitle)
+                        Spacer()
+                        if store.isCameraPairingBusy {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: primaryButtonSymbol)
+                        }
+                    }
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                .buttonStyle(OnePrimaryButtonStyle())
+                .disabled(primaryButtonDisabled)
+                .accessibilityIdentifier("camera-pairing-continue")
+            }
+        }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 12)
+        .background(OneTheme.canvas.opacity(0.98))
+        .overlay {
+            Rectangle()
+                .fill(OneTheme.secondaryInk.opacity(0.10))
+                .frame(height: 0.5)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var primaryButtonTitle: String {
+        if store.isCameraPairingBusy { return step == .details ? "Generating…" : "Refreshing…" }
+        if step == .details { return "Continue" }
+        if isConnected { return "Done" }
+        if isExpired { return "Generate new code" }
+        return "Waiting for camera…"
+    }
+
+    private var primaryButtonSymbol: String {
+        if step == .details { return "arrow.right" }
+        if isConnected { return "checkmark" }
+        if isExpired { return "arrow.clockwise" }
+        return "dot.radiowaves.left.and.right"
+    }
+
+    private var primaryButtonDisabled: Bool {
+        if store.isCameraPairingBusy { return true }
+        if step == .details { return false }
+        return !isConnected && !isExpired
+    }
+
+    private func primaryAction() {
+        validationMessage = nil
+        if step == .details {
+            beginPairing()
+        } else if isConnected {
+            dismiss()
+        } else if isExpired {
+            regeneratePairingCode()
+        }
+    }
+
+    private func beginPairing() {
+        guard !store.isCameraPairingBusy else { return }
+        isNameFocused = false
+        validationMessage = nil
+
+        Task { @MainActor in
+            await store.startCameraPairing(label: normalizedLabel)
+            guard store.cameraPairingChallenge != nil else {
+                validationMessage = store.cameraPairingError ?? "Could not create a camera pairing code."
+                return
+            }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                step = .connect
+            }
+        }
+    }
+
+    private func regeneratePairingCode() {
+        guard !store.isCameraPairingBusy else { return }
+        store.clearCameraPairing()
+        validationMessage = nil
+
+        Task { @MainActor in
+            await store.startCameraPairing(label: normalizedLabel)
+            if store.cameraPairingChallenge == nil {
+                validationMessage = store.cameraPairingError ?? "Could not create a new camera pairing code."
+            }
+        }
+    }
+
+    private func goBack() {
+        guard step == .connect, !store.isCameraPairingBusy else { return }
+        store.clearCameraPairing()
+        validationMessage = nil
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+            step = .details
+        }
     }
 }
 

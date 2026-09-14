@@ -14,6 +14,7 @@ struct OneApp: App {
                 .tint(OneTheme.cyan)
                 .task {
                     await store.checkBackend()
+                    await store.refreshCareSpaces()
                     await store.refreshLiveData()
                 }
         }

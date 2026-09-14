@@ -143,35 +143,35 @@ struct OnboardingView: View {
     }
 
     private var consentChoice: some View {
-        LiquidGlassSurface(radius: 22) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Choose for this home")
-                    .font(.headline)
-                    .foregroundStyle(OneTheme.ink)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Choose for this home")
+                .font(.headline)
+                .foregroundStyle(OneTheme.ink)
 
-                Text("This choice only controls this purpose. Nothing starts until you choose.")
-                    .font(.caption)
-                    .foregroundStyle(OneTheme.secondaryInk)
-                    .fixedSize(horizontal: false, vertical: true)
+            Text("This choice only controls this purpose. Nothing starts until you choose.")
+                .font(.caption)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
 
-                choiceButton(
-                    granted: true,
-                    title: "Allow",
-                    body: "Enable this purpose for your care circle."
-                )
-                choiceButton(
-                    granted: false,
-                    title: "Not now",
-                    body: "Keep this data source off for now."
-                )
-            }
-            .padding(16)
+            choiceButton(
+                granted: true,
+                title: "Allow",
+                body: "Enable this purpose for your care circle."
+            )
+            choiceButton(
+                granted: false,
+                title: "Not now",
+                body: "Keep this data source off for now."
+            )
         }
+        .padding(16)
+        .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(.white.opacity(0.28), lineWidth: 0.7)
+                .stroke(OneTheme.secondaryInk.opacity(0.12), lineWidth: 0.75)
                 .allowsHitTesting(false)
         }
+        .sensoryFeedback(.selection, trigger: selectedChoice)
     }
 
     private func choiceButton(granted: Bool, title: String, body: String) -> some View {
@@ -210,65 +210,67 @@ struct OnboardingView: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(OnboardingChoiceButtonStyle())
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: selectedChoice)
         .accessibilityIdentifier(granted ? "onboarding-allow" : "onboarding-not-now")
         .accessibilityLabel("\(title). \(body)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var onboardingFooter: some View {
-        LiquidGlassSurface(radius: 24) {
-            VStack(spacing: 12) {
-                HStack(spacing: 7) {
-                    ForEach(pages.indices, id: \.self) { index in
-                        Capsule()
-                            .fill(index == pageIndex ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.20))
-                            .frame(width: index == pageIndex ? 24 : 7, height: 7)
-                    }
-                }
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pageIndex)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Step \(pageIndex + 1) of \(pages.count)")
-
-                HStack(spacing: 12) {
-                    if pageIndex > 0 {
-                        Button(action: goBack) {
-                            Image(systemName: "arrow.left")
-                                .frame(width: 54, height: 54)
-                        }
-                        .buttonStyle(.glass)
-                        .accessibilityIdentifier("onboarding-back")
-                        .accessibilityLabel("Back")
-                    }
-
-                    Button(action: advance) {
-                        HStack {
-                            Text(isSaving ? "Saving…" : (pageIndex == pages.count - 1 ? "Finish setup" : "Continue"))
-                            Spacer()
-                            if isSaving {
-                                ProgressView().tint(.white)
-                            } else {
-                                Image(systemName: pageIndex == pages.count - 1 ? "checkmark" : "arrow.right")
-                            }
-                        }
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 18)
-                        .frame(maxWidth: .infinity, minHeight: 54)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .tint(OneTheme.accentBlue)
-                    .disabled(isSaving)
-                    .accessibilityIdentifier("onboarding-continue")
+        VStack(spacing: 12) {
+            HStack(spacing: 7) {
+                ForEach(pages.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(index == pageIndex ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.20))
+                        .frame(width: index == pageIndex ? 24 : 7, height: 7)
                 }
             }
-            .padding(14)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: pageIndex)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Step \(pageIndex + 1) of \(pages.count)")
+
+            HStack(spacing: 12) {
+                if pageIndex > 0 {
+                    Button(action: goBack) {
+                        Image(systemName: "arrow.left")
+                            .frame(width: 54, height: 54)
+                    }
+                    .buttonStyle(OneSecondaryButtonStyle())
+                    .accessibilityIdentifier("onboarding-back")
+                    .accessibilityLabel("Back")
+                }
+
+                Button(action: advance) {
+                    HStack {
+                        Text(isSaving ? "Saving…" : (pageIndex == pages.count - 1 ? "Finish setup" : "Continue"))
+                        Spacer()
+                        if isSaving {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: pageIndex == pages.count - 1 ? "checkmark" : "arrow.right")
+                        }
+                    }
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                .buttonStyle(OnePrimaryButtonStyle())
+                .disabled(isSaving || selectedChoice == nil)
+                .accessibilityIdentifier("onboarding-continue")
+            }
         }
+        .padding(.horizontal, 2)
+        .padding(.vertical, 12)
+        .background(OneTheme.canvas.opacity(0.98))
         .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(.white.opacity(0.30), lineWidth: 0.7)
+            Rectangle()
+                .fill(OneTheme.secondaryInk.opacity(0.10))
+                .frame(height: 0.5)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .allowsHitTesting(false)
         }
     }
@@ -319,6 +321,17 @@ struct OnboardingView: View {
     private func loadChoiceForCurrentPage() {
         selectedChoice = answeredPurposes.contains(page.purpose) ? store.onboardingConsents[page.purpose] : nil
         validationMessage = nil
+    }
+}
+
+private struct OnboardingChoiceButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 

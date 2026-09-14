@@ -34,6 +34,11 @@ final class AppStore {
     var medicationPlans: [MedicationPlan] = []
     var isMedicationLoading = false
     var isMedicationMutating = false
+    var careSpaces: [CareSpaceSummary] = []
+    var isCareSpacesLoading = false
+    var isCareSpaceMutating = false
+    var switchingCareSpaceID: UUID?
+    var careSpaceError: String?
     var backendState: BackendConnectionState
     var apiClient: any OneAPIClient
     var session: AuthSession?
@@ -53,6 +58,9 @@ final class AppStore {
     var isRoomPlanModelLoading = false
     var roomPlanModelError: String?
     var careRecipients: [CareRecipient] = []
+    var isCareRecipientsLoading = false
+    var isCareRecipientMutating = false
+    var careRecipientError: String?
     var pairedCameras: [PairedCamera] = []
     var cameraCount = 0
     var cameraPairingChallenge: CameraPairingChallenge?
@@ -65,14 +73,29 @@ final class AppStore {
     private let sessionStore: any SessionKeyStore
     let runtimeConfiguration: RuntimeConfiguration
 
-    init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], medicationDoses: [MedicationDose] = [], medicationPlans: [MedicationPlan] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore(), runtimeConfiguration: RuntimeConfiguration = RuntimeConfiguration()) {
+    init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], careRecipients: [CareRecipient] = [], medicationDoses: [MedicationDose] = [], medicationPlans: [MedicationPlan] = [], careSpaces: [CareSpaceSummary] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore(), runtimeConfiguration: RuntimeConfiguration = RuntimeConfiguration()) {
         self.events = events; self.scan = scan; self.consents = consents
-        self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.medicationPlans = medicationPlans; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore; self.runtimeConfiguration = runtimeConfiguration
-        self.careRecipients = caregivers.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
+        self.caregivers = caregivers; self.medicationDoses = medicationDoses; self.medicationPlans = medicationPlans; self.careSpaces = careSpaces; self.apiClient = apiClient; self.backendState = backendState; self.session = session; self.sessionStore = sessionStore; self.runtimeConfiguration = runtimeConfiguration
+        self.careRecipients = careRecipients
     }
+
+    var medicationSubjects: [CaregiverAccount] {
+        caregivers.filter { !$0.isCurrentUser && $0.role == .viewer }
+    }
+
+    var canManageCareRecipients: Bool { role != .resident }
 
     static func configured() -> AppStore {
 #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-one-show-family")
+            || ProcessInfo.processInfo.arguments.contains("-one-show-care-spaces")
+            || ProcessInfo.processInfo.arguments.contains("-one-show-care-space-create") {
+            let store = AppStore.demo
+            if ProcessInfo.processInfo.arguments.contains("-one-show-family") {
+                store.selectedTab = "family"
+            }
+            return store
+        }
         if ProcessInfo.processInfo.arguments.contains("-one-show-login") {
             return AppStore.live
         }
@@ -135,6 +158,10 @@ final class AppStore {
             CaregiverAccount(id: UUID(), name: "Joan Soler", relationship: "Neighbour", role: .supporter, permissions: ["Check in", "View today"], isCurrentUser: false),
             CaregiverAccount(id: UUID(), name: "Clara Martínez", relationship: "Family member", role: .viewer, permissions: ["View today"], isCurrentUser: false)
         ]
+        let careRecipients = [
+            CareRecipient(id: UUID(), displayName: "María", relationship: "Mother"),
+            CareRecipient(id: UUID(), displayName: "José", relationship: "Father")
+        ]
         let calendar = Calendar.current
         let morning = calendar.date(bySettingHour: 8, minute: 30, second: 0, of: now) ?? now
         let midday = calendar.date(bySettingHour: 13, minute: 0, second: 0, of: now) ?? now
@@ -144,7 +171,7 @@ final class AppStore {
             MedicationDose(id: UUID(), medicationName: "Midday reminder", instructions: "After lunch", scheduledAt: midday, status: .needsConfirmation, assignedCaregiverName: "Joan Soler"),
             MedicationDose(id: UUID(), medicationName: "Evening reminder", instructions: "With dinner", scheduledAt: evening, status: .scheduled, assignedCaregiverName: nil)
         ]
-        return AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, medicationDoses: medicationDoses, runtimeConfiguration: RuntimeConfiguration(info: [:]))
+        return AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, careRecipients: careRecipients, medicationDoses: medicationDoses, careSpaces: CareSpaceSummary.demoSpaces, runtimeConfiguration: RuntimeConfiguration(info: [:]))
     }
 
     func toggleConsent(_ consent: ConsentRecord) {
@@ -242,6 +269,10 @@ final class AppStore {
     }
 
     var isAuthenticated: Bool { runtimeConfiguration.isDemoMode || session != nil }
+    var activeCareSpace: CareSpaceSummary? {
+        if let homeID = session?.homeID, let matching = careSpaces.first(where: { $0.id == homeID }) { return matching }
+        return careSpaces.first(where: \.active) ?? careSpaces.first
+    }
     var requiresOnboarding: Bool {
         !runtimeConfiguration.isDemoMode && session != nil && !hasCompletedOnboarding
     }
@@ -250,7 +281,7 @@ final class AppStore {
         authError = nil
         do {
             let authenticated = try await apiClient.completePairing(code: pairingCode.trimmingCharacters(in: .whitespacesAndNewlines))
-            applySession(authenticated)
+            try applySession(authenticated)
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
 
@@ -274,7 +305,7 @@ final class AppStore {
         authError = nil
         do {
             let authenticated = try await apiClient.verifyEmailCode(EmailAuthVerifyRequest(email: email, code: code))
-            applySession(authenticated)
+            try applySession(authenticated)
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not sign in." }
     }
 
@@ -283,7 +314,7 @@ final class AppStore {
         do {
             let response = try await apiClient.bootstrapAccount(request, bootstrapSecret: bootstrapSecret)
             if let token = response.accessToken, let homeID = response.homeID, let userID = response.userID {
-                applySession(AuthSession(accessToken: token, homeID: homeID, userID: userID, role: request.role, expiresAt: response.expiresAt))
+                try applySession(AuthSession(accessToken: token, homeID: homeID, userID: userID, role: request.role, expiresAt: response.expiresAt))
             }
             return response.pairingCode
         } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not create the household."; return nil }
@@ -291,7 +322,7 @@ final class AppStore {
 
     func acceptFamilyInvite(code: String, displayName: String?, email: String? = nil) async {
         authError = nil
-        do { applySession(try await apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(code: code, displayName: displayName, email: email))) }
+        do { try applySession(try await apiClient.acceptFamilyInvite(FamilyInviteAcceptRequest(code: code, displayName: displayName, email: email))) }
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not join the household." }
     }
 
@@ -301,11 +332,158 @@ final class AppStore {
             caregivers = try await apiClient.familyMembers(homeID: session.homeID).map { account in
                 CaregiverAccount(id: account.id, name: account.name, relationship: account.id == session.userID ? "You" : account.relationship, role: account.role, permissions: account.permissions, isCurrentUser: account.id == session.userID)
             }
-            careRecipients = caregivers.filter { !$0.isCurrentUser }.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
-            if selectedSubjectID == nil { selectedSubjectID = careRecipients.first?.id; selectedSubjectName = careRecipients.first?.name ?? "Everyone" }
-            medicationPlans = try await apiClient.medicationPlans(homeID: session.homeID, subjectUserID: selectedSubjectID, activeOnly: true)
-            medicationDoses = try await apiClient.medicationReminders(homeID: session.homeID, subjectUserID: selectedSubjectID, day: selectedMedicationDate)
-        } catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not load family data." }
+            if let selectedSubjectID, !medicationSubjects.contains(where: { $0.id == selectedSubjectID }) {
+                self.selectedSubjectID = nil
+                selectedSubjectName = "Everyone"
+            }
+            if selectedSubjectID == nil, let subject = medicationSubjects.first {
+                selectedSubjectID = subject.id
+                selectedSubjectName = subject.name
+            }
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not load household access."
+        }
+        await refreshCareRecipients()
+        await refreshMedicationPlans()
+        await refreshMedicationReminders()
+    }
+
+    func refreshCareRecipients() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        isCareRecipientsLoading = true
+        defer { isCareRecipientsLoading = false }
+        do {
+            careRecipients = try await apiClient.careRecipients(homeID: session.homeID)
+            careRecipientError = nil
+            syncActiveCareSpaceRecipients()
+        } catch {
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not load the people cared for in this space."
+        }
+    }
+
+    @discardableResult
+    func createCareRecipient(name: String, relationship: String?, roomLabel: String?) async -> Bool {
+        let trimmedName = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard !trimmedName.isEmpty else {
+            careRecipientError = "Enter a name for this person."
+            return false
+        }
+        guard canManageCareRecipients else {
+            careRecipientError = "Only a caregiver can add people to this care space."
+            return false
+        }
+        let trimmedRelationship = normalizedCareRecipientField(relationship)
+        let trimmedRoom = normalizedCareRecipientField(roomLabel)
+        isCareRecipientMutating = true
+        careRecipientError = nil
+        defer { isCareRecipientMutating = false }
+
+        if runtimeConfiguration.isDemoMode {
+            careRecipients.append(CareRecipient(id: UUID(), displayName: trimmedName, relationship: trimmedRelationship, roomLabel: trimmedRoom))
+            syncActiveCareSpaceRecipients()
+            return true
+        }
+
+        guard let session else {
+            careRecipientError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        do {
+            let recipient = try await apiClient.createCareRecipient(
+                homeID: session.homeID,
+                request: CareRecipientCreateRequest(displayName: trimmedName, relationship: trimmedRelationship, roomLabel: trimmedRoom)
+            )
+            careRecipients.append(recipient)
+            syncActiveCareSpaceRecipients()
+            await refreshCareSpaces()
+            return true
+        } catch {
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not add this person."
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateCareRecipient(_ recipient: CareRecipient, name: String, relationship: String?, roomLabel: String?) async -> Bool {
+        let trimmedName = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard !trimmedName.isEmpty else {
+            careRecipientError = "Enter a name for this person."
+            return false
+        }
+        guard canManageCareRecipients else {
+            careRecipientError = "Only a caregiver can edit people in this care space."
+            return false
+        }
+        let trimmedRelationship = normalizedCareRecipientField(relationship)
+        let trimmedRoom = normalizedCareRecipientField(roomLabel)
+        isCareRecipientMutating = true
+        careRecipientError = nil
+        defer { isCareRecipientMutating = false }
+
+        if runtimeConfiguration.isDemoMode {
+            if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+                careRecipients[index].displayName = trimmedName
+                careRecipients[index].relationship = trimmedRelationship
+                careRecipients[index].roomLabel = trimmedRoom
+            }
+            syncActiveCareSpaceRecipients()
+            return true
+        }
+
+        guard let session else {
+            careRecipientError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        do {
+            let updated = try await apiClient.updateCareRecipient(
+                homeID: session.homeID,
+                recipientID: recipient.id,
+                request: CareRecipientUpdateRequest(displayName: trimmedName, relationship: trimmedRelationship, roomLabel: trimmedRoom)
+            )
+            if let index = careRecipients.firstIndex(where: { $0.id == updated.id }) { careRecipients[index] = updated }
+            syncActiveCareSpaceRecipients()
+            await refreshCareSpaces()
+            return true
+        } catch {
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not update this person."
+            return false
+        }
+    }
+
+    @discardableResult
+    func removeCareRecipient(_ recipientID: UUID) async -> Bool {
+        guard canManageCareRecipients else {
+            careRecipientError = "Only a caregiver can remove people from this care space."
+            return false
+        }
+        isCareRecipientMutating = true
+        careRecipientError = nil
+        defer { isCareRecipientMutating = false }
+
+        if runtimeConfiguration.isDemoMode {
+            careRecipients.removeAll { $0.id == recipientID }
+            syncActiveCareSpaceRecipients()
+            return true
+        }
+
+        guard let session else {
+            careRecipientError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        do {
+            try await apiClient.deleteCareRecipient(homeID: session.homeID, recipientID: recipientID)
+            careRecipients.removeAll { $0.id == recipientID }
+            syncActiveCareSpaceRecipients()
+            await refreshCareSpaces()
+            return true
+        } catch {
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not remove this person."
+            return false
+        }
+    }
+
+    func clearCareRecipientError() {
+        careRecipientError = nil
     }
 
     func refreshLiveData() async {
@@ -324,6 +502,92 @@ final class AppStore {
         }
         await refreshScene()
         await refreshFamilyData()
+    }
+
+    func refreshMapData() async {
+        guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do {
+            let objects = try await apiClient.roomObjects(homeID: session.homeID)
+            scan = RoomScan(id: scan.id, schemaVersion: scan.schemaVersion, capturedAt: scan.capturedAt, units: scan.units, upAxis: scan.upAxis, objects: objects, zones: scan.zones, artifactHash: scan.artifactHash, exportedUSDZName: scan.exportedUSDZName)
+        } catch {
+            // Keep the last mapped observations during transient refresh errors.
+        }
+        await refreshScene()
+    }
+
+    func refreshCareSpaces() async {
+        guard runtimeConfiguration.isDemoMode || session != nil else { return }
+        isCareSpacesLoading = true
+        defer { isCareSpacesLoading = false }
+        do {
+            let refreshed = try await apiClient.careSpaces()
+            let activeHomeID = session?.homeID
+            careSpaces = refreshed.map { space in
+                var updated = space
+                if let activeHomeID { updated.active = space.id == activeHomeID }
+                return updated
+            }
+            careSpaceError = nil
+        } catch {
+            careSpaceError = (error as? LocalizedError)?.errorDescription ?? "Could not load your care spaces."
+        }
+    }
+
+    @discardableResult
+    func activateCareSpace(_ space: CareSpaceSummary) async -> Bool {
+        guard !space.active && space.id != session?.homeID else { return true }
+        isCareSpaceMutating = true
+        switchingCareSpaceID = space.id
+        careSpaceError = nil
+        defer {
+            switchingCareSpaceID = nil
+            isCareSpaceMutating = false
+        }
+        do {
+            let authenticated = try await apiClient.activateCareSpace(id: space.id)
+            try applySession(authenticated)
+            careSpaces = careSpaces.map { item in
+                var updated = item
+                updated.active = item.id == authenticated.homeID
+                return updated
+            }
+            if !runtimeConfiguration.isDemoMode { await refreshCareSpaces() }
+            return true
+        } catch {
+            careSpaceError = (error as? LocalizedError)?.errorDescription ?? "Could not switch care spaces."
+            return false
+        }
+    }
+
+    @discardableResult
+    func createCareSpace(name: String, careSetting: CareSetting, supportFocus: SupportFocus) async -> Bool {
+        let trimmedName = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard !trimmedName.isEmpty else {
+            careSpaceError = "Enter a name for this care space."
+            return false
+        }
+        isCareSpaceMutating = true
+        careSpaceError = nil
+        defer { isCareSpaceMutating = false }
+        do {
+            let authenticated = try await apiClient.createCareSpace(CareSpaceCreateRequest(name: trimmedName, careSetting: careSetting, supportFocus: supportFocus))
+            try applySession(authenticated)
+            careSpaces = careSpaces.map { item in
+                var updated = item
+                updated.active = false
+                return updated
+            }
+            careSpaces.append(CareSpaceSummary(id: authenticated.homeID, name: trimmedName, residentName: "Resident", careSetting: careSetting, supportFocus: supportFocus, role: .admin, active: true, recipientNames: [], recipientCount: 0))
+            if !runtimeConfiguration.isDemoMode { await refreshCareSpaces() }
+            return true
+        } catch {
+            careSpaceError = (error as? LocalizedError)?.errorDescription ?? "Could not create the care space."
+            return false
+        }
+    }
+
+    func clearCareSpaceError() {
+        careSpaceError = nil
     }
 
     func startCameraPairing(label: String = "ONE room camera") async {
@@ -411,35 +675,60 @@ final class AppStore {
 
         do {
             let artifact = try RoomPlanArtifactBuilder.build(from: capture.room)
+            var scanMetadata = artifact.metadata
+            scanMetadata.visualSamplingAttempts = capture.visualDiagnostics.samplingAttempts
+            scanMetadata.visualMissingFrameCount = capture.visualDiagnostics.missingFrameCount
+            scanMetadata.visualImageEncodingFailureCount = capture.visualDiagnostics.imageEncodingFailureCount
+            scanMetadata.visualInvalidMatrixCount = capture.visualDiagnostics.invalidMatrixCount
+            scanMetadata.visualSampleCount = capture.visualDiagnostics.capturedSampleCount
+            scanMetadata.visualDepthSampleCount = capture.visualDiagnostics.depthSampleCount
+            scanMetadata.visualLastTrackingState = capture.visualDiagnostics.lastTrackingState
             artifactData = artifact.usdzData
-            let map = try await apiClient.uploadRoomPlan(roomID: nil, scan: artifact.scan, metadata: artifact.metadata)
+            let map = try await apiClient.uploadRoomPlan(roomID: nil, scan: artifact.scan, metadata: scanMetadata)
             uploadedMapID = map.mapID
             pendingRoomPlanMapID = map.mapID
             pendingRoomPlanUSDZData = artifact.usdzData
 
-            if capture.visualSamples.count >= 2 {
-                do {
-                    let formatter = ISO8601DateFormatter()
-                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    let frames = capture.visualSamples.map { sample in
-                        RoomPlanVisualLandmarkFrameRequest(
-                            frameBase64: sample.jpegData.base64EncodedString(),
-                            width: sample.width,
-                            height: sample.height,
-                            depthBase64: sample.depthData?.base64EncodedString(),
-                            depthWidth: sample.depthWidth,
-                            depthHeight: sample.depthHeight,
-                            intrinsics: Matrix3x3Request(values: sample.intrinsics),
-                            cameraToWorld: sample.cameraToWorld,
-                            capturedAt: formatter.string(from: sample.capturedAt)
-                        )
+            if !capture.visualSamples.isEmpty {
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+                // Upload viewpoints independently. The backend merges derived
+                // landmarks into one map index, so every part of the room can
+                // contribute without relying on one large fragile request.
+                let orderedSamples = capture.visualSamples.sorted {
+                    ($0.depthData != nil ? 1 : 0) > ($1.depthData != nil ? 1 : 0)
+                }
+                var visualIndexReady = false
+                var receivedLandmarkResponse = false
+                let frames = orderedSamples.map { sample in
+                    RoomPlanVisualLandmarkFrameRequest(
+                        frameBase64: sample.jpegData.base64EncodedString(),
+                        width: sample.width,
+                        height: sample.height,
+                        depthBase64: sample.depthData?.base64EncodedString(),
+                        depthWidth: sample.depthWidth,
+                        depthHeight: sample.depthHeight,
+                        intrinsics: Matrix3x3Request(values: sample.intrinsics),
+                        cameraToWorld: sample.cameraToWorld,
+                        capturedAt: formatter.string(from: sample.capturedAt)
+                    )
+                }
+
+                for frame in frames {
+                    do {
+                        let visualIndex = try await apiClient.uploadRoomPlanVisualLandmarks(mapID: map.mapID, frames: [frame])
+                        receivedLandmarkResponse = true
+                        visualIndexReady = visualIndexReady || visualIndex.status == "ready"
+                    } catch {
+                        continue
                     }
-                    let visualIndex = try await apiClient.uploadRoomPlanVisualLandmarks(mapID: map.mapID, frames: frames)
-                    if visualIndex.status != "ready" {
-                        visualLandmarkWarning = "The 3D map is saved, but there were not enough visual landmarks to position a separate camera automatically. Scan the room again with more texture and furniture in view."
-                    }
-                } catch {
-                    visualLandmarkWarning = "The 3D map is saved, but its visual landmark index could not be built. Separate cameras will need a fresh RoomPlan scan before automatic positioning."
+                }
+
+                if !visualIndexReady {
+                    visualLandmarkWarning = receivedLandmarkResponse
+                        ? "The 3D map is saved, but the captured views did not contain enough stable visual landmarks to position the fixed camera. Try another scan with furniture, corners, artwork, or other textured surfaces in view."
+                        : "The 3D map is saved, but its visual landmark index could not be uploaded. Camera positioning is not ready yet."
                 }
             } else {
                 visualLandmarkWarning = "The 3D map is saved, but too few RGB + camera-pose samples were captured for automatic positioning of a separate camera."
@@ -495,6 +784,58 @@ final class AppStore {
                 authError = "Your ONE session expired while saving the LiDAR scan. Sign in again, then retry the scan."
             } else {
                 authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the native room scan."
+            }
+            return false
+        }
+    }
+
+    func uploadARVideoRoom(_ capture: ARVideoRoomCaptureResult) async -> Bool {
+        guard !runtimeConfiguration.isDemoMode else {
+            authError = "Room video scans can only be saved while connected to the live ONE backend."
+            return false
+        }
+        guard let session else {
+            authError = "Your ONE session has expired. Sign in again before saving this room scan."
+            return false
+        }
+        if let expiresAt = session.expiresAt, expiresAt <= Date() {
+            authError = "Your ONE session has expired. Sign in again before saving this room scan."
+            return false
+        }
+        guard ARVideoRoomCaptureCapability.isSupported else {
+            authError = "ARKit room video capture is not supported on this device."
+            return false
+        }
+
+        isRoomPlanUploading = true
+        authError = nil
+        roomPlanModelError = nil
+        defer { isRoomPlanUploading = false }
+
+        do {
+            let map = try await apiClient.uploadARVideoRoom(scan: capture.scan)
+            mapUploadResult = ArtifactUploadResponse(artifactID: map.mapID, sha256: map.usdz?.sha256 ?? "", expiresAt: nil)
+            scene = try await apiClient.refreshScene(homeID: session.homeID)
+
+            if scene.mapID == map.mapID, map.usdz?.available == true {
+                do {
+                    let data = try await apiClient.downloadRoomPlanUSDZ(mapID: map.mapID)
+                    try cacheRoomPlanModel(mapID: map.mapID, data: data)
+                    roomPlanModelError = "Approximate metric 3D generated from this iPhone's ARKit room video."
+                } catch {
+                    roomPlanModelError = "The room map is saved, but its generated 3D model could not be cached on this iPhone yet. Tap retry from the map to load it again."
+                }
+            } else {
+                await loadRoomPlanModelIfAvailable()
+            }
+            return true
+        } catch {
+            if let apiError = error as? OneAPIError,
+               case let .server(status, _) = apiError,
+               status == 401 {
+                authError = "Your ONE session expired while saving the room video scan. Sign in again, then retry."
+            } else {
+                authError = (error as? LocalizedError)?.errorDescription ?? "Could not build the room from this ARKit video scan."
             }
             return false
         }
@@ -651,16 +992,29 @@ final class AppStore {
     private func replaceFamilyMember(_ member: CaregiverAccount, preservingCurrentUser: Bool) {
         guard let index = caregivers.firstIndex(where: { $0.id == member.id }) else { return }
         caregivers[index] = CaregiverAccount(id: member.id, name: member.name, relationship: member.relationship, role: member.role, permissions: member.permissions, isCurrentUser: preservingCurrentUser || member.id == session?.userID)
-        careRecipients = caregivers.filter { !$0.isCurrentUser }.map { CareRecipient(id: $0.id, name: $0.name, relationship: $0.relationship) }
     }
 
     private func removeFamilyMemberLocally(_ memberID: UUID) {
         caregivers.removeAll { $0.id == memberID }
-        careRecipients.removeAll { $0.id == memberID }
         if selectedSubjectID == memberID {
             selectedSubjectID = nil
             selectedSubjectName = "Everyone"
         }
+    }
+
+    private func normalizedCareRecipientField(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func syncActiveCareSpaceRecipients() {
+        guard let activeID = session?.homeID ?? careSpaces.first(where: \.active)?.id,
+              let index = careSpaces.firstIndex(where: { $0.id == activeID }) else { return }
+        let names = careRecipients.map(\.displayName)
+        careSpaces[index].recipientNames = names
+        careSpaces[index].recipientCount = names.count
+        careSpaces[index].residentName = names.first ?? "Resident"
     }
 
     func refreshMedicationReminders() async {
@@ -677,35 +1031,47 @@ final class AppStore {
         catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the room map." }
     }
 
-    private func applySession(_ authenticated: AuthSession) {
+    private func applySession(_ authenticated: AuthSession) throws {
         if !runtimeConfiguration.isDemoMode {
-            try? sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
-            events = []
-            scan = .empty
-            scene = .empty
-            roomPlanModelURL = nil
-            roomPlanModelMapID = nil
-            roomPlanModelError = nil
-            pendingRoomPlanMapID = nil
-            pendingRoomPlanUSDZData = nil
-            consents = []
-            caregivers = []
-            careRecipients = []
-            medicationDoses = []
-            medicationPlans = []
-            pairedCameras = []
-            cameraCount = 0
-            clearCameraPairing()
-            assistantMessages = []
+            try sessionStore.save(JSONEncoder().encode(authenticated), for: Self.sessionKey)
+            clearHomeScopedState()
         }
         session = authenticated; role = authenticated.role
+        selectedTab = "overview"
         onboardingStep = 0
         onboardingConsents = Self.onboardingConsentDefaults
         hasCompletedOnboarding = (try? sessionStore.load(Self.onboardingKey(homeID: authenticated.homeID, userID: authenticated.userID))) != nil
         emailChallenge = nil
-        apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration, accessToken: authenticated.accessToken, homeID: authenticated.homeID)
+        apiClient = apiClient.authenticated(accessToken: authenticated.accessToken, homeID: authenticated.homeID)
         backendState = .connected
-        Task { await refreshLiveData() }
+        Task {
+            await refreshCareSpaces()
+            await refreshLiveData()
+        }
+    }
+
+    private func clearHomeScopedState() {
+        events = []
+        scan = .empty
+        scene = .empty
+        roomPlanModelURL = nil
+        roomPlanModelMapID = nil
+        roomPlanModelError = nil
+        pendingRoomPlanMapID = nil
+        pendingRoomPlanUSDZData = nil
+        mapUploadResult = nil
+        consents = []
+        caregivers = []
+        careRecipients = []
+        selectedSubjectID = nil
+        selectedSubjectName = "Everyone"
+        medicationDoses = []
+        medicationPlans = []
+        pairedCameras = []
+        cameraCount = 0
+        clearCameraPairing()
+        assistantMessages = []
+        lastDataRequest = nil
     }
 
     @discardableResult
@@ -785,26 +1151,14 @@ final class AppStore {
             onboardingConsents = Self.onboardingConsentDefaults
             hasCompletedOnboarding = false
             emailChallenge = nil
+            careSpaces = []
+            careSpaceError = nil
+            switchingCareSpaceID = nil
+            isCareSpaceMutating = false
             apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration)
             backendState = runtimeConfiguration.isDemoMode ? .demo : .unavailable
             if !runtimeConfiguration.isDemoMode {
-                events = []
-                scan = .empty
-                scene = .empty
-                roomPlanModelURL = nil
-                roomPlanModelMapID = nil
-                roomPlanModelError = nil
-                pendingRoomPlanMapID = nil
-                pendingRoomPlanUSDZData = nil
-                consents = []
-                caregivers = []
-                careRecipients = []
-                medicationDoses = []
-                medicationPlans = []
-                pairedCameras = []
-                cameraCount = 0
-                clearCameraPairing()
-                assistantMessages = []
+                clearHomeScopedState()
             }
         }
         guard session != nil else { return }

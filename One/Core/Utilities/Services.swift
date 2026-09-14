@@ -24,10 +24,26 @@ protocol SessionKeyStore: Sendable {
 
 struct KeychainSessionStore: SessionKeyStore {
     func save(_ value: Data, for key: String) throws {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: key, kSecValueData as String: value, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
-        SecItemDelete(query as CFDictionary)
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: key,
+        ]
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: value] as CFDictionary
+        )
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus))
+        }
+
+        var newItem = query
+        newItem[kSecValueData as String] = value
+        newItem[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(newItem as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw NSError(domain: NSOSStatusErrorDomain, code: Int(addStatus))
+        }
     }
 
     func load(_ key: String) throws -> Data? {

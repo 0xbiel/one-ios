@@ -4,6 +4,7 @@ import simd
 import Darwin
 
 let roomPlanSchemaVersion = "roomplan-normalized.v1"
+let arVideoRoomSchemaVersion = "arkit-video-room.v1"
 
 enum RoomPlanMatrix {
     static func rowMajor(_ value: simd_float4x4) throws -> [[Double]] {
@@ -152,6 +153,87 @@ struct RoomPlanScanMetadata: Codable, Sendable, Equatable {
     let units: String
     let upAxis: String
     let geometryType: String
+    var visualSamplingAttempts: Int? = nil
+    var visualMissingFrameCount: Int? = nil
+    var visualImageEncodingFailureCount: Int? = nil
+    var visualInvalidMatrixCount: Int? = nil
+    var visualSampleCount: Int? = nil
+    var visualDepthSampleCount: Int? = nil
+    var visualLastTrackingState: String? = nil
+}
+
+struct ARVideoPoint3D: Codable, Sendable, Equatable {
+    let x: Double
+    let y: Double
+    let z: Double
+
+    init(_ value: SIMD3<Float>) throws {
+        guard value.x.isFinite, value.y.isFinite, value.z.isFinite else {
+            throw RoomPlanNormalizationError.nonFiniteGeometry
+        }
+        x = Double(value.x)
+        y = Double(value.y)
+        z = Double(value.z)
+    }
+}
+
+struct ARVideoSurface: Codable, Sendable, Equatable {
+    let id: String
+    let kind: String
+    let alignment: String
+    let vertices: [ARVideoPoint3D]
+    let confidence: Double
+
+    init(id: UUID, kind: String, alignment: String, vertices: [SIMD3<Float>], confidence: Double) throws {
+        guard ["floor", "wall"].contains(kind),
+              ["horizontal", "vertical"].contains(alignment),
+              vertices.count >= 3,
+              confidence.isFinite,
+              (0...1).contains(confidence) else {
+            throw RoomPlanNormalizationError.invalidGeometry
+        }
+        self.id = id.uuidString
+        self.kind = kind
+        self.alignment = alignment
+        self.vertices = try vertices.map(ARVideoPoint3D.init)
+        self.confidence = confidence
+    }
+}
+
+struct ARVideoCaptureDiagnostics: Codable, Sendable, Equatable {
+    let frameSampleCount: Int
+    let normalTrackingSamples: Int
+    let planeCount: Int
+    let trackingState: String
+}
+
+struct ARVideoRoomScan: Encodable, Sendable, Equatable {
+    let schemaVersion = arVideoRoomSchemaVersion
+    let producer = "native-ios"
+    let framework = "ARKit"
+    let units = "m"
+    let upAxis = "Y"
+    let coordinateFrame = "arkit-world"
+    let geometryType = "3d"
+    let lidar = false
+    let capturedAt: String
+    let roomID: String? = nil
+    let surfaces: [ARVideoSurface]
+    let diagnostics: ARVideoCaptureDiagnostics
+
+    init(surfaces: [ARVideoSurface], diagnostics: ARVideoCaptureDiagnostics, capturedAt: Date = Date()) throws {
+        guard surfaces.contains(where: { $0.kind == "floor" }),
+              surfaces.filter({ $0.kind == "wall" }).count >= 2,
+              diagnostics.trackingState == "normal",
+              diagnostics.normalTrackingSamples >= 6 else {
+            throw RoomPlanNormalizationError.invalidGeometry
+        }
+        self.surfaces = surfaces
+        self.diagnostics = diagnostics
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        self.capturedAt = formatter.string(from: capturedAt)
+    }
 }
 
 struct RoomPlanCaptureFixture: Sendable {

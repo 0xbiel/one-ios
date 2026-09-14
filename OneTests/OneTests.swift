@@ -50,6 +50,17 @@ final class OneTests: XCTestCase {
         XCTAssertNil(store.session)
     }
 
+    func testKeychainSessionStoreOverwritesExistingSessionValue() throws {
+        let store = KeychainSessionStore()
+        let key = "one.tests.session.\(UUID().uuidString)"
+        defer { try? store.delete(key) }
+
+        try store.save(Data("first".utf8), for: key)
+        try store.save(Data("second".utf8), for: key)
+
+        XCTAssertEqual(try store.load(key), Data("second".utf8))
+    }
+
     func testMockPairingLoginCreatesAuthenticatedSession() async {
         let store = AppStore.demo
         await store.login(pairingCode: "DEMO")
@@ -117,6 +128,261 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(pairingSession.role, .caregiver)
     }
 
+    func testCameraPairingClientDecodesDocumentedSnakeCaseContract() async throws {
+        let homeID = UUID()
+        let pairingID = UUID()
+        var requests: [URLRequest] = []
+
+        OneURLProtocolStub.handler = { request in
+            requests.append(request)
+            let body: Data
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/api/v1/homes/\(homeID.uuidString.lowercased())/pairing/start"):
+                body = Data("""
+                {"pairing_id":"\(pairingID.uuidString)","pairing_code":"482701","code":"482701","expires_in_seconds":600,"home_id":"\(homeID.uuidString)","user_id":"\(pairingID.uuidString)"}
+                """.utf8)
+            case ("GET", "/api/v1/homes/\(homeID.uuidString.lowercased())/pairing/\(pairingID.uuidString.lowercased())/status"):
+                body = Data("""
+                {"pairing_id":"\(pairingID.uuidString)","home_id":"\(homeID.uuidString)","status":"pending","expires_at":"2026-09-14T12:00:00Z","connected_at":null,"device":{"id":"\(pairingID.uuidString)","label":"Living room camera","role":"publisher"}}
+                """.utf8)
+            default:
+                throw OneAPIError.invalidResponse
+            }
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "caregiver-token", homeID: homeID, session: URLSession(configuration: .oneTest))
+
+        let challenge = try await client.startCameraPairing(homeID: homeID, label: "Living room camera")
+        XCTAssertEqual(challenge.pairingID, pairingID)
+        XCTAssertEqual(challenge.pairingCode, "482701")
+        XCTAssertEqual(challenge.expiresInSeconds, 600)
+
+        let status = try await client.cameraPairingStatus(homeID: homeID, pairingID: pairingID)
+        XCTAssertEqual(status.pairingID, pairingID)
+        XCTAssertEqual(status.status, "pending")
+        XCTAssertEqual(status.device.id, pairingID)
+        XCTAssertEqual(status.device.label, "Living room camera")
+        XCTAssertEqual(status.device.role, "publisher")
+
+        XCTAssertEqual(requests.count, 2)
+        let startBody = try XCTUnwrap(requestBody(requests[0]))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: startBody) as? [String: Any])
+        XCTAssertEqual(payload["label"] as? String, "Living room camera")
+        XCTAssertEqual(payload["expires_in_seconds"] as? Int, 600)
+    }
+
+    func testCareSpaceClientListsCreatesAndActivatesWithExactContract() async throws {
+        let currentHomeID = UUID()
+        let residenceID = UUID()
+        let userID = UUID()
+        var requests: [URLRequest] = []
+        OneURLProtocolStub.handler = { request in
+            requests.append(request)
+            let body: Data
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/v1/account/homes"):
+                body = Data("""
+                {"data":[
+                  {"id":"\(currentHomeID.uuidString)","name":"Family Home","residentName":"María","recipientNames":["María","José"],"recipientCount":2,"careSetting":"home","supportFocus":"general","role":"admin","active":true},
+                  {"id":"\(residenceID.uuidString)","name":"La Marina","residentName":"Resident","recipientNames":[],"recipientCount":0,"careSetting":"residence","supportFocus":"mci","role":"resident","active":false}
+                ]}
+                """.utf8)
+            case ("POST", "/api/v1/account/homes"):
+                body = Data("""
+                {"access_token":"created-token","token_type":"bearer","expires_in":3600,"home_id":"\(residenceID.uuidString)","user_id":"\(userID.uuidString)","role":"admin"}
+                """.utf8)
+            case ("POST", "/api/v1/account/homes/\(residenceID.uuidString.lowercased())/activate"):
+                body = Data("""
+                {"access_token":"switched-token","token_type":"bearer","expires_in":3600,"home_id":"\(residenceID.uuidString)","user_id":"\(userID.uuidString)","role":"resident"}
+                """.utf8)
+            default:
+                throw OneAPIError.invalidResponse
+            }
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "old-token", homeID: currentHomeID, session: URLSession(configuration: .oneTest))
+
+        let spaces = try await client.careSpaces()
+        XCTAssertEqual(spaces.count, 2)
+        XCTAssertEqual(spaces[0].role, .admin)
+        XCTAssertEqual(spaces[0].peopleSummary, "María & José")
+        XCTAssertEqual(spaces[1].careSetting, .residence)
+        XCTAssertEqual(spaces[1].supportFocus, .mci)
+        XCTAssertEqual(spaces[1].peopleSummary, "No people added yet")
+
+        let created = try await client.createCareSpace(CareSpaceCreateRequest(name: "La Marina", careSetting: .residence, supportFocus: .mci))
+        XCTAssertEqual(created.homeID, residenceID)
+        XCTAssertEqual(created.role, .caregiver)
+        let createBody = try XCTUnwrap(requestBody(requests[1]))
+        let createPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: createBody) as? [String: String])
+        XCTAssertEqual(createPayload["name"], "La Marina")
+        XCTAssertEqual(createPayload["care_setting"], "residence")
+        XCTAssertEqual(createPayload["support_focus"], "mci")
+
+        let activated = try await client.activateCareSpace(id: residenceID)
+        XCTAssertEqual(activated.role, .resident)
+        XCTAssertEqual(requests[2].url?.path, "/api/v1/account/homes/\(residenceID.uuidString.lowercased())/activate")
+        XCTAssertEqual(requests[2].value(forHTTPHeaderField: "Authorization"), "Bearer old-token")
+    }
+
+    func testCareRecipientClientUsesDedicatedCRUDContract() async throws {
+        let homeID = UUID()
+        let recipientID = UUID()
+        var requests: [URLRequest] = []
+        OneURLProtocolStub.handler = { request in
+            requests.append(request)
+            let body: Data
+            let status: Int
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/v1/homes/\(homeID.uuidString.lowercased())/care-recipients"):
+                status = 200
+                body = Data("""
+                {"data":[{"id":"\(recipientID.uuidString)","display_name":"María","relationship":"Partner","room_label":"Room 12","created_at":"2026-09-14T07:00:00Z"}]}
+                """.utf8)
+            case ("POST", "/api/v1/homes/\(homeID.uuidString.lowercased())/care-recipients"):
+                status = 201
+                body = Data("""
+                {"data":{"id":"\(recipientID.uuidString)","display_name":"María","relationship":"Partner","room_label":"Room 12","created_at":"2026-09-14T07:00:00Z"}}
+                """.utf8)
+            case ("PATCH", "/api/v1/homes/\(homeID.uuidString.lowercased())/care-recipients/\(recipientID.uuidString.lowercased())"):
+                status = 200
+                body = Data("""
+                {"data":{"id":"\(recipientID.uuidString)","display_name":"Maria","relationship":null,"room_label":null,"created_at":"2026-09-14T07:00:00Z"}}
+                """.utf8)
+            case ("DELETE", "/api/v1/homes/\(homeID.uuidString.lowercased())/care-recipients/\(recipientID.uuidString.lowercased())"):
+                status = 204
+                body = Data()
+            default:
+                throw OneAPIError.invalidResponse
+            }
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+
+        let listed = try await client.careRecipients(homeID: homeID)
+        XCTAssertEqual(listed.first?.displayName, "María")
+        XCTAssertEqual(listed.first?.roomLabel, "Room 12")
+
+        let created = try await client.createCareRecipient(homeID: homeID, request: CareRecipientCreateRequest(displayName: "María", relationship: "Partner", roomLabel: "Room 12"))
+        XCTAssertEqual(created.id, recipientID)
+        let createPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(requestBody(requests[1]))) as? [String: Any])
+        XCTAssertEqual(createPayload["display_name"] as? String, "María")
+        XCTAssertEqual(createPayload["relationship"] as? String, "Partner")
+        XCTAssertEqual(createPayload["room_label"] as? String, "Room 12")
+
+        let updated = try await client.updateCareRecipient(homeID: homeID, recipientID: recipientID, request: CareRecipientUpdateRequest(displayName: "Maria", relationship: nil, roomLabel: nil))
+        XCTAssertEqual(updated.displayName, "Maria")
+        XCTAssertNil(updated.relationship)
+        XCTAssertNil(updated.roomLabel)
+        let updatePayload = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(requestBody(requests[2]))) as? [String: Any])
+        XCTAssertEqual(updatePayload["display_name"] as? String, "Maria")
+        XCTAssertTrue(updatePayload["relationship"] is NSNull)
+        XCTAssertTrue(updatePayload["room_label"] is NSNull)
+
+        try await client.deleteCareRecipient(homeID: homeID, recipientID: recipientID)
+        XCTAssertEqual(requests.map(\.httpMethod), ["GET", "POST", "PATCH", "DELETE"])
+        XCTAssertTrue(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer token" })
+    }
+
+    func testDemoCareRecipientsMutateWithoutChangingHouseholdAccess() async throws {
+        let store = AppStore.demo
+        let accessBefore = store.caregivers
+        let initialCount = store.careRecipients.count
+
+        let created = await store.createCareRecipient(name: "  Elena  ", relationship: "Grandmother", roomLabel: "Room 4")
+        XCTAssertTrue(created)
+        XCTAssertEqual(store.careRecipients.count, initialCount + 1)
+        XCTAssertEqual(store.caregivers, accessBefore)
+        XCTAssertEqual(store.activeCareSpace?.peopleSummary, "3 people")
+
+        let recipient = try XCTUnwrap(store.careRecipients.last)
+        let updated = await store.updateCareRecipient(recipient, name: "Elena Soler", relationship: nil, roomLabel: nil)
+        XCTAssertTrue(updated)
+        XCTAssertEqual(store.careRecipients.last?.displayName, "Elena Soler")
+        XCTAssertNil(store.careRecipients.last?.relationship)
+        XCTAssertNil(store.careRecipients.last?.roomLabel)
+
+        let removed = await store.removeCareRecipient(recipient.id)
+        XCTAssertTrue(removed)
+        XCTAssertEqual(store.careRecipients.count, initialCount)
+        XCTAssertEqual(store.caregivers, accessBefore)
+        XCTAssertEqual(store.activeCareSpace?.peopleSummary, "María & José")
+    }
+
+    func testCareSpaceSwitchPersistsSessionClearsScopedStateAndRestoresOnboarding() async throws {
+        let first = CareSpaceSummary(id: UUID(), name: "Family Home", residentName: "María", careSetting: .home, supportFocus: .general, role: .admin, active: true)
+        let second = CareSpaceSummary(id: UUID(), name: "La Marina", residentName: "Resident", careSetting: .residence, supportFocus: .mci, role: .resident, active: false)
+        let userID = UUID()
+        let oldSession = AuthSession(accessToken: "old", homeID: first.id, userID: userID, role: .caregiver, expiresAt: Date().addingTimeInterval(3_600))
+        let sessionStore = OneTestSessionStore()
+        try sessionStore.save(Data("complete".utf8), for: AppStore.onboardingKey(homeID: second.id, userID: userID))
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let event = ObservedEvent(id: UUID(), kind: .movement, timestamp: Date(), location: "Kitchen", confidence: .high, explanation: "Test event", reviewed: false, hasClip: false)
+        let client = MockOneAPIClient(mockCareSpaces: [first, second], mockUserID: userID)
+        let store = AppStore(events: [event], scan: .empty, consents: AppStore.demo.consents, careSpaces: [first, second], apiClient: client, backendState: .connected, session: oldSession, sessionStore: sessionStore, runtimeConfiguration: configuration)
+        store.selectedTab = "family"
+
+        let switched = await store.activateCareSpace(second)
+
+        XCTAssertTrue(switched)
+        XCTAssertEqual(store.session?.homeID, second.id)
+        XCTAssertEqual(store.role, .resident)
+        XCTAssertEqual(store.selectedTab, "overview")
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertTrue(store.consents.isEmpty)
+        XCTAssertEqual(store.activeCareSpace?.id, second.id)
+        XCTAssertFalse(store.requiresOnboarding)
+        let persistedData = try XCTUnwrap(sessionStore.load(AppStore.sessionKey))
+        XCTAssertEqual(try JSONDecoder().decode(AuthSession.self, from: persistedData).homeID, second.id)
+    }
+
+    func testCreatingCareSpaceActivatesItAndRequiresPerHomeOnboarding() async throws {
+        let first = CareSpaceSummary(id: UUID(), name: "Family Home", residentName: "María", careSetting: .home, supportFocus: .general, role: .admin, active: true)
+        let userID = UUID()
+        let oldSession = AuthSession(accessToken: "old", homeID: first.id, userID: userID, role: .caregiver, expiresAt: Date().addingTimeInterval(3_600))
+        let sessionStore = OneTestSessionStore()
+        try sessionStore.save(Data("complete".utf8), for: AppStore.onboardingKey(homeID: first.id, userID: userID))
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = MockOneAPIClient(mockCareSpaces: [first], mockUserID: userID)
+        let store = AppStore(events: [], scan: .empty, consents: [], careSpaces: [first], apiClient: client, backendState: .connected, session: oldSession, sessionStore: sessionStore, runtimeConfiguration: configuration)
+
+        let created = await store.createCareSpace(name: "  Grandparents Residence  ", careSetting: .residence, supportFocus: .mci)
+
+        XCTAssertTrue(created)
+        XCTAssertNotEqual(store.session?.homeID, first.id)
+        XCTAssertEqual(store.activeCareSpace?.name, "Grandparents Residence")
+        XCTAssertEqual(store.activeCareSpace?.careSetting, .residence)
+        XCTAssertTrue(store.requiresOnboarding)
+        XCTAssertEqual(store.selectedTab, "overview")
+    }
+
+    func testFailedCareSpaceSwitchKeepsCurrentSessionAndData() async throws {
+        let first = CareSpaceSummary(id: UUID(), name: "Family Home", residentName: "María", careSetting: .home, supportFocus: .general, role: .admin, active: true)
+        let second = CareSpaceSummary(id: UUID(), name: "La Marina", residentName: "Resident", careSetting: .residence, supportFocus: .mci, role: .caregiver, active: false)
+        let oldSession = AuthSession(accessToken: "old", homeID: first.id, userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3_600))
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let event = ObservedEvent(id: UUID(), kind: .movement, timestamp: Date(), location: "Kitchen", confidence: .high, explanation: "Keep me", reviewed: false, hasClip: false)
+        let client = MockOneAPIClient(mockCareSpaces: [first, second], careSpaceError: .server(status: 503, message: "Temporarily unavailable"))
+        let store = AppStore(events: [event], scan: .empty, consents: [], careSpaces: [first, second], apiClient: client, backendState: .connected, session: oldSession, sessionStore: OneTestSessionStore(), runtimeConfiguration: configuration)
+
+        let switched = await store.activateCareSpace(second)
+
+        XCTAssertFalse(switched)
+        XCTAssertEqual(store.session, oldSession)
+        XCTAssertEqual(store.events.map(\.id), [event.id])
+        XCTAssertEqual(store.activeCareSpace?.id, first.id)
+        XCTAssertNotNil(store.careSpaceError)
+    }
+
     func testOnboardingConsentUpdatesLocalAccountStateAfterSaving() async {
         let session = AuthSession(accessToken: "token", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600))
         let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
@@ -173,6 +439,7 @@ final class OneTests: XCTestCase {
     func testDemoFamilyMemberCanBeEditedAndRemovedLocally() async throws {
         let store = AppStore.demo
         let member = try XCTUnwrap(store.caregivers.first(where: { !$0.isCurrentUser && $0.role == .supporter }))
+        let recipientsBefore = store.careRecipients
 
         let didUpdate = await store.updateFamilyMember(member.id, accessRole: .viewer)
         XCTAssertTrue(didUpdate)
@@ -182,7 +449,7 @@ final class OneTests: XCTestCase {
         let didRemove = await store.removeFamilyMember(member.id)
         XCTAssertTrue(didRemove)
         XCTAssertNil(store.caregivers.first(where: { $0.id == member.id }))
-        XCTAssertNil(store.careRecipients.first(where: { $0.id == member.id }))
+        XCTAssertEqual(store.careRecipients, recipientsBefore)
     }
 
     func testDemoFamilyMemberMutationsProtectSelfAndOwner() async throws {
@@ -343,6 +610,69 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(RoomPlanCaptureError.unsupportedDevice.localizedDescription, "RoomPlan is not supported on this device.")
     }
 
+    func testARVideoRoomScanEncodesExplicitNonLidarProvenance() throws {
+        let floor = try ARVideoSurface(
+            id: UUID(), kind: "floor", alignment: "horizontal",
+            vertices: [SIMD3(-2, 0, -2), SIMD3(2, 0, -2), SIMD3(2, 0, 2), SIMD3(-2, 0, 2)],
+            confidence: 0.82
+        )
+        let wallA = try ARVideoSurface(
+            id: UUID(), kind: "wall", alignment: "vertical",
+            vertices: [SIMD3(-2, 0, -2), SIMD3(2, 0, -2), SIMD3(2, 2.4, -2), SIMD3(-2, 2.4, -2)],
+            confidence: 0.74
+        )
+        let wallB = try ARVideoSurface(
+            id: UUID(), kind: "wall", alignment: "vertical",
+            vertices: [SIMD3(2, 0, -2), SIMD3(2, 0, 2), SIMD3(2, 2.4, 2), SIMD3(2, 2.4, -2)],
+            confidence: 0.74
+        )
+        let diagnostics = ARVideoCaptureDiagnostics(frameSampleCount: 8, normalTrackingSamples: 8, planeCount: 3, trackingState: "normal")
+        let scan = try ARVideoRoomScan(surfaces: [floor, wallA, wallB], diagnostics: diagnostics, capturedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder.one.encode(scan)) as? [String: Any])
+
+        XCTAssertEqual(json["schema_version"] as? String, "arkit-video-room.v1")
+        XCTAssertEqual(json["framework"] as? String, "ARKit")
+        XCTAssertEqual(json["coordinate_frame"] as? String, "arkit-world")
+        XCTAssertEqual(json["lidar"] as? Bool, false)
+        XCTAssertEqual((json["surfaces"] as? [[String: Any]])?.count, 3)
+        XCTAssertEqual((json["diagnostics"] as? [String: Any])?["normal_tracking_samples"] as? Int, 8)
+    }
+
+    func testARVideoSceneRendersGeneratedUSDZWithoutRoomPlanGeometry() throws {
+        let payload: [String: Any] = [
+            "sceneId": UUID().uuidString,
+            "mapId": UUID().uuidString,
+            "version": 1,
+            "source": "arkit-video-3d",
+            "dimension": "3d",
+            "provenance": "arkit-video-3d",
+            "approximate": true,
+            "metricScaleKnown": true,
+            "geometryStatus": "ready",
+            "rescanRequired": false,
+            "coordinateFrame": "arkit-world",
+            "geometry": [
+                "coordinate_space": "arkit-world",
+                "polygons": [], "walls": [], "surfaces": []
+            ],
+            "usdz": [
+                "available": true,
+                "sha256": "abc",
+                "bytes": 1024,
+                "content_type": "model/vnd.usdz+zip",
+                "download_path": "/api/v1/homes/home/maps/map/usdz"
+            ]
+        ]
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let decoded = try decoder.decode(SceneDescriptor.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(decoded.source, .arkitVideo3D)
+        XCTAssertTrue(decoded.approximate)
+        XCTAssertTrue(decoded.isRenderable3D)
+        XCTAssertTrue(decoded.hasReadyUSDZ)
+        XCTAssertNil(decoded.canonicalGeometry)
+    }
+
     func testRoomPlanSceneRequiresExactValidated3DSource() throws {
         let element = try RoomPlanElement(id: UUID().uuidString, category: "wall", confidence: "high", center: RoomPlanPoint3D(x: 0, y: 1, z: 0), dimensions: RoomPlanDimensions3D(x: 1, y: 2, z: 0.1), transform: [[1, 0, 0, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]])
         let geometry = try RoomPlanNormalizedScan(roomID: UUID(), capturedAt: Date(), walls: [element], floors: [], openings: [], doors: [], windows: [], objects: [], sections: [])
@@ -433,9 +763,67 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(requests[2].url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/maps/\(mapID.uuidString.lowercased())/usdz")
     }
 
+    func testARVideoClientUsesDedicatedNativeRoute() async throws {
+        let homeID = UUID()
+        let mapID = UUID()
+        let floor = try ARVideoSurface(id: UUID(), kind: "floor", alignment: "horizontal", vertices: [SIMD3(-1, 0, -1), SIMD3(1, 0, -1), SIMD3(1, 0, 1), SIMD3(-1, 0, 1)], confidence: 0.8)
+        let wallA = try ARVideoSurface(id: UUID(), kind: "wall", alignment: "vertical", vertices: [SIMD3(-1, 0, -1), SIMD3(1, 0, -1), SIMD3(1, 2, -1), SIMD3(-1, 2, -1)], confidence: 0.7)
+        let wallB = try ARVideoSurface(id: UUID(), kind: "wall", alignment: "vertical", vertices: [SIMD3(1, 0, -1), SIMD3(1, 0, 1), SIMD3(1, 2, 1), SIMD3(1, 2, -1)], confidence: 0.7)
+        let scan = try ARVideoRoomScan(surfaces: [floor, wallA, wallB], diagnostics: ARVideoCaptureDiagnostics(frameSampleCount: 8, normalTrackingSamples: 8, planeCount: 3, trackingState: "normal"))
+        var capturedRequest: URLRequest?
+        OneURLProtocolStub.handler = { request in
+            capturedRequest = request
+            let body = "{\"id\":\"\(mapID.uuidString)\",\"revision\":3,\"coordinate_frame\":\"arkit-world\",\"source\":\"arkit-video-3d\",\"dimension\":\"3d\",\"usdz\":{\"available\":true,\"sha256\":\"abc\",\"bytes\":1024,\"content_type\":\"model/vnd.usdz+zip\",\"download_path\":\"/api/v1/...\"}}".data(using: .utf8)!
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        let uploaded = try await client.uploadARVideoRoom(scan: scan)
+        XCTAssertEqual(uploaded.mapID, mapID)
+        XCTAssertEqual(uploaded.source, .arkitVideo3D)
+        XCTAssertEqual(capturedRequest?.httpMethod, "POST")
+        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/maps/arkit-video")
+        XCTAssertEqual(capturedRequest?.value(forHTTPHeaderField: "X-ONE-Client"), "native-ios-arkit-video")
+        let body = try XCTUnwrap(requestBody(try XCTUnwrap(capturedRequest)))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["lidar"] as? Bool, false)
+        XCTAssertEqual(json["coordinate_frame"] as? String, "arkit-world")
+    }
+
+    func testRoomPlanVisualLandmarkResponseDecodesSnakeCase() async throws {
+        let homeID = UUID()
+        let mapID = UUID()
+        OneURLProtocolStub.handler = { request in
+            let body = "{\"map_id\":\"\(mapID.uuidString)\",\"status\":\"ready\",\"landmark_count\":128,\"detector\":\"opencv-orb\",\"diagnostics\":{}}".data(using: .utf8)!
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        let frame = RoomPlanVisualLandmarkFrameRequest(
+            frameBase64: "AA==",
+            width: 1,
+            height: 1,
+            depthBase64: nil,
+            depthWidth: nil,
+            depthHeight: nil,
+            intrinsics: Matrix3x3Request(values: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+            cameraToWorld: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+            capturedAt: "2026-09-14T10:00:00.000Z"
+        )
+        let response = try await client.uploadRoomPlanVisualLandmarks(mapID: mapID, frames: [frame])
+        XCTAssertEqual(response.mapID, mapID)
+        XCTAssertEqual(response.status, "ready")
+        XCTAssertEqual(response.landmarkCount, 128)
+    }
+
     #if targetEnvironment(simulator)
     func testRoomPlanCapabilityIsDisabledOnSimulator() {
         XCTAssertFalse(RoomPlanCapability.isSupported)
+        XCTAssertFalse(ARVideoRoomCaptureCapability.isSupported)
     }
     #endif
 }

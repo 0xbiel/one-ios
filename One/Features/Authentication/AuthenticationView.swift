@@ -115,6 +115,15 @@ struct LoginView: View {
                     .padding(.bottom, 22)
                 }
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if stage == .form {
+                    authFooter
+                        .frame(width: contentWidth)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 10)
+                        .padding(.bottom, 8)
+                }
+            }
         }
         .task { await store.checkBackend() }
         .onChange(of: mode) { _, _ in
@@ -218,17 +227,6 @@ struct LoginView: View {
 
     private var formContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: goBack) {
-                Label(emailChallenge ? "Change email" : "Back", systemImage: "chevron.left")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(OneTheme.secondaryInk)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("auth-back")
-            .padding(.top, 22)
-
             if emailChallenge {
                 confirmationContent
             } else {
@@ -260,9 +258,6 @@ struct LoginView: View {
                     .padding(.top, 22)
 
                 errorMessage
-
-                authFooter
-                    .padding(.top, 18)
             }
         }
     }
@@ -312,9 +307,6 @@ struct LoginView: View {
             .padding(.top, 6)
 
             errorMessage
-
-            authFooter
-                .padding(.top, 18)
         }
         .padding(.top, 26)
     }
@@ -445,13 +437,7 @@ struct LoginView: View {
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.emailAddress)
                         } else {
-                            authField("Six-digit pairing code", systemImage: "number", text: $pairingCode, field: .pairingCode)
-                                .keyboardType(.numberPad)
-                                .textContentType(.oneTimeCode)
-                                .onChange(of: pairingCode) { _, value in
-                                    pairingCode = sanitizedCode(value)
-                                }
-                                .accessibilityLabel("Six-digit pairing code")
+                            pairingCodeField
                         }
                     } else {
                         authField("Invitation code", systemImage: "number", text: $pairingCode, field: .pairingCode)
@@ -503,89 +489,138 @@ struct LoginView: View {
     }
 
     private var emailVerificationCodeField: some View {
-        LiquidGlassSurface(radius: 20) {
+        sixDigitCodeField(
+            text: $emailCode,
+            field: .emailCode,
+            accessibilityLabel: "Email verification code",
+            identifier: "auth-field-emailCode"
+        )
+    }
+
+    private var pairingCodeField: some View {
+        sixDigitCodeField(
+            text: $pairingCode,
+            field: .pairingCode,
+            accessibilityLabel: "Six-digit pairing code",
+            identifier: "auth-field-pairingCode"
+        )
+    }
+
+    private func sixDigitCodeField(
+        text: Binding<String>,
+        field: Field,
+        accessibilityLabel: String,
+        identifier: String
+    ) -> some View {
+        LiquidGlassSurface(radius: 18) {
             ZStack {
-                HStack(spacing: 8) {
+                HStack(spacing: 4) {
                     ForEach(0..<6, id: \.self) { index in
-                        verificationDigit(at: index)
-                            .padding(.trailing, index == 2 ? 10 : 0)
+                        verificationDigit(at: index, code: text.wrappedValue, field: field)
+                            .padding(.trailing, index == 2 ? 12 : 0)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
-                .onTapGesture { focusedField = .emailCode }
+                .onTapGesture { focusedField = field }
 
-                TextField("Verification code", text: $emailCode)
+                TextField("", text: text)
                     .keyboardType(.numberPad)
                     .textContentType(.oneTimeCode)
-                    .focused($focusedField, equals: .emailCode)
+                    .focused($focusedField, equals: field)
                     .foregroundStyle(.clear)
                     .tint(.clear)
                     .textFieldStyle(.plain)
                     .frame(maxWidth: .infinity, minHeight: 62)
                     .contentShape(Rectangle())
-                    .onChange(of: emailCode) { _, value in
-                        emailCode = sanitizedCode(value)
+                    .onChange(of: text.wrappedValue) { _, value in
+                        text.wrappedValue = sanitizedCode(value)
                         validationMessage = nil
                         store.authError = nil
                     }
-                    .accessibilityLabel("Email verification code")
-                    .accessibilityValue(emailCode.isEmpty ? "Empty" : "\(emailCode.count) of 6 digits entered")
-                    .accessibilityIdentifier("auth-field-emailCode")
+                    .accessibilityLabel(accessibilityLabel)
+                    .accessibilityValue(text.wrappedValue.isEmpty ? "Empty" : "\(text.wrappedValue.count) of 6 digits entered")
+                    .accessibilityIdentifier(identifier)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
         }
-        .frame(maxWidth: .infinity, minHeight: 70)
+        .frame(width: 250)
+        .frame(minHeight: 66)
         .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(focusedField == .emailCode ? OneTheme.accentBlue.opacity(0.62) : .white.opacity(0.28), lineWidth: focusedField == .emailCode ? 1.2 : 0.6)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(focusedField == field ? OneTheme.accentBlue.opacity(0.62) : .white.opacity(0.28), lineWidth: focusedField == field ? 1.2 : 0.6)
                 .allowsHitTesting(false)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
-    private func verificationDigit(at index: Int) -> some View {
-        let digits = Array(emailCode)
+    private func verificationDigit(at index: Int, code: String, field: Field) -> some View {
+        let digits = Array(code)
         let digit = index < digits.count ? String(digits[index]) : ""
-        let activeIndex = min(emailCode.count, 5)
-        let isActive = focusedField == .emailCode && index == activeIndex
+        let activeIndex = min(code.count, 5)
+        let isActive = focusedField == field && index == activeIndex
 
         return VStack(spacing: 6) {
-            Text(digit.isEmpty ? " " : digit)
-                .font(.system(size: 27, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(OneTheme.ink)
-                .frame(height: 34)
+            Text(digit.isEmpty ? "0" : digit)
+                .font(.system(size: 25, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(digit.isEmpty ? OneTheme.secondaryInk.opacity(0.28) : OneTheme.ink)
+                .frame(height: 32)
 
             Capsule()
                 .fill(isActive ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(digit.isEmpty ? 0.22 : 0.55))
-                .frame(width: 34, height: isActive ? 2.5 : 1.5)
+                .frame(width: 27, height: isActive ? 2.5 : 1.5)
         }
-        .frame(width: 36, height: 54)
+        .frame(width: 30, height: 52)
     }
 
     private var authFooter: some View {
         VStack(spacing: 8) {
-            Button(action: submit) {
-                HStack {
-                    Text(isSubmitting ? "Working…" : actionTitle)
-                    Spacer()
-                    if isSubmitting {
-                        ProgressView().tint(.white)
-                    } else {
-                        Image(systemName: "arrow.right")
-                    }
+            HStack(spacing: 12) {
+                Button(action: goBack) {
+                    Image(systemName: "arrow.left")
+                        .frame(width: 54, height: 54)
                 }
+                .buttonStyle(OneSecondaryButtonStyle())
+                .disabled(isSubmitting)
+                .accessibilityIdentifier("auth-back")
+                .accessibilityLabel(emailChallenge ? "Change email" : "Back")
+
+                Button(action: submit) {
+                    HStack {
+                        Text(isSubmitting ? "Working…" : actionTitle)
+                        Spacer()
+                        if isSubmitting {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: "arrow.right")
+                        }
+                    }
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                }
+                .buttonStyle(OnePrimaryButtonStyle())
+                .disabled(isSubmitting)
+                .accessibilityHint("Sign in securely to your ONE care space")
             }
-            .buttonStyle(OnePrimaryButtonStyle())
-            .disabled(isSubmitting)
-            .accessibilityHint("Sign in securely to your ONE care space")
 
             Text(footerMessage)
                 .font(.caption)
                 .foregroundStyle(OneTheme.secondaryInk)
                 .multilineTextAlignment(.center)
         }
-        .padding(.bottom, 8)
+        .padding(.horizontal, 2)
+        .padding(.vertical, 12)
+        .background(OneTheme.canvas.opacity(0.98))
+        .overlay {
+            Rectangle()
+                .fill(OneTheme.secondaryInk.opacity(0.10))
+                .frame(height: 0.5)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .allowsHitTesting(false)
+        }
     }
 
     private func authField(_ title: String, systemImage: String, text: Binding<String>, field: Field) -> some View {

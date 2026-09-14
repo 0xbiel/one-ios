@@ -83,6 +83,34 @@ struct AuthSession: Codable, Sendable, Equatable {
     let role: UserRole
     let expiresAt: Date?
 }
+struct CareSpaceCreateRequest: Codable, Sendable, Equatable {
+    let name: String
+    let careSetting: CareSetting
+    let supportFocus: SupportFocus
+}
+struct CareRecipientCreateRequest: Codable, Sendable, Equatable {
+    let displayName: String
+    let relationship: String?
+    let roomLabel: String?
+}
+struct CareRecipientUpdateRequest: Codable, Sendable, Equatable {
+    let displayName: String?
+    let relationship: String?
+    let roomLabel: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case displayName, relationship, roomLabel
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(displayName, forKey: .displayName)
+        if let relationship { try container.encode(relationship, forKey: .relationship) }
+        else { try container.encodeNil(forKey: .relationship) }
+        if let roomLabel { try container.encode(roomLabel, forKey: .roomLabel) }
+        else { try container.encodeNil(forKey: .roomLabel) }
+    }
+}
 struct BootstrapAccountRequest: Codable, Sendable {
     let displayName: String
     let email: String?
@@ -105,6 +133,12 @@ struct CameraPairingChallenge: Codable, Sendable, Equatable {
     let pairingID: UUID
     let pairingCode: String
     let expiresInSeconds: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case pairingID = "pairingId"
+        case pairingCode
+        case expiresInSeconds
+    }
 }
 
 struct CameraPairingStatus: Codable, Sendable, Equatable {
@@ -119,6 +153,14 @@ struct CameraPairingStatus: Codable, Sendable, Equatable {
     let expiresAt: String
     let connectedAt: String?
     let device: Device
+
+    private enum CodingKeys: String, CodingKey {
+        case pairingID = "pairingId"
+        case status
+        case expiresAt
+        case connectedAt
+        case device
+    }
 }
 struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String?; let email: String? }
 struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
@@ -267,9 +309,12 @@ struct RoomPlanVisualLandmarksResponse: Codable, Sendable, Equatable {
     let detector: String
 
     private enum CodingKeys: String, CodingKey {
-        case mapID = "map_id"
+        // JSONDecoder.one converts `map_id` to `mapId` before matching CodingKeys.
+        // Keep this key in its post-conversion form so a successful landmark
+        // build is not reported to the app as a decoding failure.
+        case mapID = "mapId"
         case status
-        case landmarkCount = "landmark_count"
+        case landmarkCount
         case detector
     }
 }
@@ -314,12 +359,20 @@ protocol OneAPIClient: Sendable {
     func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession
+    func careSpaces() async throws -> [CareSpaceSummary]
+    func createCareSpace(_ request: CareSpaceCreateRequest) async throws -> AuthSession
+    func activateCareSpace(id: UUID) async throws -> AuthSession
+    func authenticated(accessToken: String, homeID: UUID) -> any OneAPIClient
     func events(homeID: UUID) async throws -> [ObservedEvent]
     func roomObjects(homeID: UUID) async throws -> [RoomObject]
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera]
     func cameraCount(homeID: UUID) async throws -> Int
     func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus
+    func careRecipients(homeID: UUID) async throws -> [CareRecipient]
+    func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient
+    func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient
+    func deleteCareRecipient(homeID: UUID, recipientID: UUID) async throws
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult
@@ -332,6 +385,7 @@ protocol OneAPIClient: Sendable {
     func logout() async throws
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse
+    func uploadARVideoRoom(scan: ARVideoRoomScan) async throws -> RoomPlanMapUploadResponse
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse
     func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse
     func registerRoomPlanCamera(homeID: UUID, request: RoomPlanCameraRegistrationRequest) async throws -> RoomPlanCameraRegistrationResponse
@@ -342,7 +396,104 @@ protocol OneAPIClient: Sendable {
     func requestDeletion() async throws -> DataRequestResponse
 }
 
+private final class MockCareSpaceState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var spaces: [CareSpaceSummary]
+
+    init(spaces: [CareSpaceSummary]) {
+        self.spaces = spaces
+    }
+
+    func all() -> [CareSpaceSummary] {
+        lock.lock()
+        defer { lock.unlock() }
+        return spaces
+    }
+
+    func create(_ request: CareSpaceCreateRequest) -> CareSpaceSummary {
+        lock.lock()
+        defer { lock.unlock() }
+        spaces = spaces.map { item in
+            var updated = item
+            updated.active = false
+            return updated
+        }
+        let created = CareSpaceSummary(id: UUID(), name: request.name, residentName: "Resident", careSetting: request.careSetting, supportFocus: request.supportFocus, role: .admin, active: true)
+        spaces.append(created)
+        return created
+    }
+
+    func activate(id: UUID) -> CareSpaceSummary? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let selected = spaces.first(where: { $0.id == id }) else { return nil }
+        spaces = spaces.map { item in
+            var updated = item
+            updated.active = item.id == id
+            return updated
+        }
+        return selected
+    }
+}
+
+private final class MockCareRecipientState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recipientsByHome: [UUID: [CareRecipient]]
+
+    init(recipientsByHome: [UUID: [CareRecipient]]) {
+        self.recipientsByHome = recipientsByHome
+    }
+
+    func all(homeID: UUID) -> [CareRecipient] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recipientsByHome[homeID] ?? []
+    }
+
+    func create(homeID: UUID, request: CareRecipientCreateRequest) -> CareRecipient {
+        lock.lock()
+        defer { lock.unlock() }
+        let recipient = CareRecipient(id: UUID(), displayName: request.displayName, relationship: request.relationship, roomLabel: request.roomLabel)
+        recipientsByHome[homeID, default: []].append(recipient)
+        return recipient
+    }
+
+    func update(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) -> CareRecipient? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var recipients = recipientsByHome[homeID], let index = recipients.firstIndex(where: { $0.id == recipientID }) else { return nil }
+        var recipient = recipients[index]
+        if let displayName = request.displayName { recipient.displayName = displayName }
+        recipient.relationship = request.relationship
+        recipient.roomLabel = request.roomLabel
+        recipients[index] = recipient
+        recipientsByHome[homeID] = recipients
+        return recipient
+    }
+
+    func delete(homeID: UUID, recipientID: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var recipients = recipientsByHome[homeID], recipients.contains(where: { $0.id == recipientID }) else { return false }
+        recipients.removeAll { $0.id == recipientID }
+        recipientsByHome[homeID] = recipients
+        return true
+    }
+}
+
 struct MockOneAPIClient: OneAPIClient {
+    private let careSpaceState: MockCareSpaceState
+    private let careRecipientState: MockCareRecipientState
+    let mockUserID: UUID
+    let careSpaceError: OneAPIError?
+
+    init(mockCareSpaces: [CareSpaceSummary] = CareSpaceSummary.demoSpaces, mockCareRecipients: [UUID: [CareRecipient]] = [:], mockUserID: UUID = UUID(), careSpaceError: OneAPIError? = nil) {
+        self.careSpaceState = MockCareSpaceState(spaces: mockCareSpaces)
+        self.careRecipientState = MockCareRecipientState(recipientsByHome: mockCareRecipients)
+        self.mockUserID = mockUserID
+        self.careSpaceError = careSpaceError
+    }
+
     func health() async throws -> BackendHealthResponse { BackendHealthResponse(status: "ok", database: "demo", localInferenceModel: "qwen3.6-35b-a3b") }
     func createPairingChallenge(_ request: PairingChallengeRequest) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(300)) }
     func completePairing(code: String) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
@@ -350,12 +501,36 @@ struct MockOneAPIClient: OneAPIClient {
     func verifyEmailCode(_ request: EmailAuthVerifyRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
     func bootstrapAccount(_ request: BootstrapAccountRequest, bootstrapSecret: String?) async throws -> PairingChallengeResponse { PairingChallengeResponse(pairingID: UUID(), expiresAt: Date().addingTimeInterval(600), accessToken: "demo", homeID: UUID(), userID: UUID(), role: request.role.rawValue) }
     func acceptFamilyInvite(_ request: FamilyInviteAcceptRequest) async throws -> AuthSession { AuthSession(accessToken: "demo", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3600)) }
+    func careSpaces() async throws -> [CareSpaceSummary] {
+        if let careSpaceError { throw careSpaceError }
+        return careSpaceState.all()
+    }
+    func createCareSpace(_ request: CareSpaceCreateRequest) async throws -> AuthSession {
+        if let careSpaceError { throw careSpaceError }
+        let created = careSpaceState.create(request)
+        return AuthSession(accessToken: "demo-created", homeID: created.id, userID: mockUserID, role: .caregiver, expiresAt: Date().addingTimeInterval(3600))
+    }
+    func activateCareSpace(id: UUID) async throws -> AuthSession {
+        if let careSpaceError { throw careSpaceError }
+        guard let space = careSpaceState.activate(id: id) else { throw OneAPIError.server(status: 404, message: "Care space membership not found") }
+        return AuthSession(accessToken: "demo-switched", homeID: id, userID: mockUserID, role: space.role.userRole, expiresAt: Date().addingTimeInterval(3600))
+    }
+    func authenticated(accessToken: String, homeID: UUID) -> any OneAPIClient { self }
     func events(homeID: UUID) async throws -> [ObservedEvent] { [] }
     func roomObjects(homeID: UUID) async throws -> [RoomObject] { [] }
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera] { [] }
     func cameraCount(homeID: UUID) async throws -> Int { 0 }
     func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge { CameraPairingChallenge(pairingID: UUID(), pairingCode: "482701", expiresInSeconds: 600) }
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus { CameraPairingStatus(pairingID: pairingID, status: "connected", expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)), connectedAt: ISO8601DateFormatter().string(from: Date()), device: .init(id: pairingID, label: "Demo camera", role: "publisher")) }
+    func careRecipients(homeID: UUID) async throws -> [CareRecipient] { careRecipientState.all(homeID: homeID) }
+    func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient { careRecipientState.create(homeID: homeID, request: request) }
+    func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient {
+        guard let recipient = careRecipientState.update(homeID: homeID, recipientID: recipientID, request: request) else { throw OneAPIError.server(status: 404, message: "Care recipient not found") }
+        return recipient
+    }
+    func deleteCareRecipient(homeID: UUID, recipientID: UUID) async throws {
+        guard careRecipientState.delete(homeID: homeID, recipientID: recipientID) else { throw OneAPIError.server(status: 404, message: "Care recipient not found") }
+    }
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String { "123456" }
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult {
@@ -373,6 +548,7 @@ struct MockOneAPIClient: OneAPIClient {
     func logout() async throws { }
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID()) }
+    func uploadARVideoRoom(scan: ARVideoRoomScan) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID(), source: .arkitVideo3D, coordinateFrame: "arkit-world", usdz: USDZAsset(available: true, sha256: "local-demo", bytes: 1, contentType: "model/vnd.usdz+zip", downloadPath: nil)) }
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse { USDZUploadResponse(mapID: mapID, usdz: USDZAsset(available: true, sha256: "local-demo", bytes: data.count, contentType: "model/vnd.usdz+zip", downloadPath: nil)) }
     func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse { RoomPlanVisualLandmarksResponse(mapID: mapID, status: "ready", landmarkCount: 128, detector: "opencv-orb") }
     func registerRoomPlanCamera(homeID: UUID, request: RoomPlanCameraRegistrationRequest) async throws -> RoomPlanCameraRegistrationResponse { RoomPlanCameraRegistrationResponse(id: UUID(), status: .positioned, cameraID: request.cameraID, mapID: request.mapID, coordinateFrame: "roomplan-local", cameraToWorld: request.cameraToWorld, confidence: request.confidence, trackingState: request.trackingState, source: "auto-roomplan-registration") }
@@ -452,6 +628,26 @@ struct HTTPOneAPIClient: OneAPIClient {
         return AuthSession(accessToken: response.accessToken, homeID: homeID, userID: userID, role: response.role == "resident" ? .resident : .caregiver, expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 
+    func careSpaces() async throws -> [CareSpaceSummary] {
+        let response: BackendCareSpacesResponse = try await send(path: "/account/homes", method: "GET", body: nil, requiresSession: true)
+        return response.data
+    }
+
+    func createCareSpace(_ request: CareSpaceCreateRequest) async throws -> AuthSession {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendPairingResponse = try await send(path: "/account/homes", method: "POST", body: body, requiresSession: true)
+        return try response.authSession
+    }
+
+    func activateCareSpace(id: UUID) async throws -> AuthSession {
+        let response: BackendPairingResponse = try await send(path: "/account/homes/\(id.oneAPIPath)/activate", method: "POST", body: nil, requiresSession: true)
+        return try response.authSession
+    }
+
+    func authenticated(accessToken: String, homeID: UUID) -> any OneAPIClient {
+        HTTPOneAPIClient(baseURL: baseURL, accessToken: accessToken, homeID: homeID, session: session)
+    }
+
     func events(homeID: UUID) async throws -> [ObservedEvent] {
         var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/events"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "limit", value: "50")]
@@ -474,14 +670,33 @@ struct HTTPOneAPIClient: OneAPIClient {
     }
 
     func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge {
-        struct Response: Decodable { let pairingID: UUID; let pairingCode: String; let expiresInSeconds: Int }
         let body = try JSONSerialization.data(withJSONObject: ["label": label, "expires_in_seconds": 600])
-        let response: Response = try await send(path: "/homes/\(homeID.oneAPIPath)/pairing/start", method: "POST", body: body, requiresSession: true)
-        return CameraPairingChallenge(pairingID: response.pairingID, pairingCode: response.pairingCode, expiresInSeconds: response.expiresInSeconds)
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/pairing/start", method: "POST", body: body, requiresSession: true)
     }
 
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus {
         try await send(path: "/homes/\(homeID.oneAPIPath)/pairing/\(pairingID.oneAPIPath)/status", method: "GET", body: nil, requiresSession: true)
+    }
+
+    func careRecipients(homeID: UUID) async throws -> [CareRecipient] {
+        let response: BackendCareRecipientsResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/care-recipients", method: "GET", body: nil, requiresSession: true)
+        return response.data
+    }
+
+    func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendCareRecipientMutationResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/care-recipients", method: "POST", body: body, requiresSession: true)
+        return response.data
+    }
+
+    func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendCareRecipientMutationResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/care-recipients/\(recipientID.oneAPIPath)", method: "PATCH", body: body, requiresSession: true)
+        return response.data
+    }
+
+    func deleteCareRecipient(homeID: UUID, recipientID: UUID) async throws {
+        _ = try await sendRaw(path: "/homes/\(homeID.oneAPIPath)/care-recipients/\(recipientID.oneAPIPath)", method: "DELETE", body: nil, requiresSession: true, headers: [:])
     }
 
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] {
@@ -568,6 +783,12 @@ struct HTTPOneAPIClient: OneAPIClient {
         guard let homeID else { throw OneAPIError.missingSession }
         let body = try JSONEncoder.one.encode(RoomPlanUploadRequest(roomID: roomID, normalizedScan: scan, scanMetadata: metadata))
         return try await send(path: "/homes/\(homeID.oneAPIPath)/maps/roomplan", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
+    }
+
+    func uploadARVideoRoom(scan: ARVideoRoomScan) async throws -> RoomPlanMapUploadResponse {
+        guard let homeID else { throw OneAPIError.missingSession }
+        let body = try JSONEncoder.one.encode(scan)
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/maps/arkit-video", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-arkit-video"])
     }
 
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse {
@@ -687,6 +908,20 @@ private struct BackendPairingResponse: Decodable {
         case userID = "userId"
         case role
     }
+
+    var authSession: AuthSession {
+        get throws {
+            guard let homeID = UUID(uuidString: homeID), let userID = UUID(uuidString: userID) else { throw OneAPIError.invalidResponse }
+            let membership = role.flatMap(CareSpaceMembershipRole.init(rawValue:))
+            return AuthSession(
+                accessToken: accessToken,
+                homeID: homeID,
+                userID: userID,
+                role: membership?.userRole ?? .caregiver,
+                expiresAt: Date().addingTimeInterval(TimeInterval(expiresIn))
+            )
+        }
+    }
 }
 
 private struct BackendBootstrapResponse: Decodable {
@@ -705,6 +940,9 @@ private struct BackendBootstrapResponse: Decodable {
     }
 }
 private struct BackendMeResponse: Decodable { let actor: BackendActor }
+private struct BackendCareSpacesResponse: Decodable { let data: [CareSpaceSummary] }
+private struct BackendCareRecipientsResponse: Decodable { let data: [CareRecipient] }
+private struct BackendCareRecipientMutationResponse: Decodable { let data: CareRecipient }
 private struct BackendActor: Decodable { let role: String }
 private struct BackendConsentResponse: Decodable { let id: String? }
 private struct BackendIDResponse: Decodable { let id: String }
@@ -748,21 +986,35 @@ private struct BackendObject: Decodable {
     let label: String
     let lastSeenAt: Date?
     let point: BackendPoint?
+    let worldPoint: BackendPoint?
+    let mapId: String?
+    let cameraId: String?
     let confidence: Double?
 
     var object: RoomObject? {
         guard let id = UUID(uuidString: id) else { return nil }
-        let point = point ?? BackendPoint(x: nil, y: nil)
+        let mappedPoint = worldPoint ?? point ?? BackendPoint(x: nil, y: nil, z: nil)
         let confidenceLevel: ObservationConfidence
         switch confidence ?? 0 {
         case 0.8...: confidenceLevel = .high
         case 0.5..<0.8: confidenceLevel = .medium
         default: confidenceLevel = .low
         }
-        return RoomObject(id: id, name: label, category: "object", position: SIMD3(Float(point.x ?? 0), Float(point.y ?? 0), 0), dimensions: SIMD3(repeating: 0), confidence: confidenceLevel, zoneID: id)
+        return RoomObject(
+            id: id,
+            name: label,
+            category: label.lowercased(),
+            position: SIMD3(Float(mappedPoint.x ?? 0), Float(mappedPoint.y ?? 0), Float(mappedPoint.z ?? 0)),
+            dimensions: SIMD3(repeating: 0),
+            confidence: confidenceLevel,
+            zoneID: id,
+            mapID: mapId.flatMap(UUID.init(uuidString:)),
+            cameraID: cameraId.flatMap(UUID.init(uuidString:)),
+            observedAt: lastSeenAt
+        )
     }
 }
-private struct BackendPoint: Decodable { let x: Double?; let y: Double? }
+private struct BackendPoint: Decodable { let x: Double?; let y: Double?; let z: Double? }
 private struct BackendCamerasResponse: Decodable { let data: [BackendCamera] }
 private struct BackendCamera: Decodable {
     let id: String

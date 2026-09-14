@@ -2,6 +2,10 @@ import SwiftUI
 
 struct FamilyView: View {
     @Bindable var store: AppStore
+    @State private var showCareRecipientSheet = false
+    @State private var editingCareRecipient: CareRecipient?
+    @State private var recipientToRemove: CareRecipient?
+    @State private var showRecipientRemoveConfirmation = false
     @State private var showInviteSheet = false
     @State private var editingCaregiver: CaregiverAccount?
     @State private var memberToRemove: CaregiverAccount?
@@ -21,12 +25,21 @@ struct FamilyView: View {
                         Text("Family, in sync.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.4).foregroundStyle(OneTheme.ink)
                         Text("People, reminders, and permissions around the home.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
                     }
-                    Picker("Person or household", selection: $store.selectedSubjectName) {
-                        Text("Everyone").tag("Everyone")
-                        ForEach(store.careRecipients) { recipient in Text(recipient.name).tag(recipient.name) }
-                    }.pickerStyle(.menu).accessibilityLabel("Selected person or household").onChange(of: store.selectedSubjectName) { _, value in store.selectedSubjectID = store.careRecipients.first(where: { $0.name == value })?.id; Task { await store.refreshMedicationReminders(); await store.refreshMedicationPlans() } }
+                    caredForSection
+                    if !store.medicationSubjects.isEmpty {
+                        Picker("Medication records", selection: $store.selectedSubjectName) {
+                            Text("Everyone").tag("Everyone")
+                            ForEach(store.medicationSubjects) { subject in Text(subject.name).tag(subject.name) }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityLabel("Medication subject")
+                        .onChange(of: store.selectedSubjectName) { _, value in
+                            store.selectedSubjectID = store.medicationSubjects.first(where: { $0.name == value })?.id
+                            Task { await store.refreshMedicationReminders(); await store.refreshMedicationPlans() }
+                        }
+                    }
                     DatePicker("Reminder date", selection: $store.selectedMedicationDate, displayedComponents: .date).datePickerStyle(.compact).onChange(of: store.selectedMedicationDate) { _, _ in Task { await store.refreshMedicationReminders() } }
-                    Text("Showing plans and observations for \(store.selectedSubjectName). Switch people before reviewing sensitive details.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
+                    Text("Medication records remain tied to authenticated resident accounts. People cared for can be managed independently.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
                     peopleSection
                     medicationSection
                     caregiverAssistant
@@ -36,6 +49,9 @@ struct FamilyView: View {
             .background(OneTheme.canvas.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
             .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showCareRecipientSheet) {
+                CareRecipientEditorSheet(store: store, recipient: editingCareRecipient)
+            }
             .sheet(isPresented: $showInviteSheet) { InviteCaregiverSheet(store: store) }
             .sheet(item: $editingCaregiver) { caregiver in FamilyAccessSheet(store: store, member: caregiver) }
             .sheet(isPresented: $showMedicationPlanSheet) { MedicationPlanSheet(store: store, plan: editingMedicationPlan, subjectName: store.selectedSubjectName) }
@@ -50,6 +66,17 @@ struct FamilyView: View {
             } message: {
                 Text(memberToRemove.map { "Remove \($0.name) from this household? Their active sessions will be revoked, and this cannot be undone from the app." } ?? "This person will lose access to the household.")
             }
+            .confirmationDialog("Remove from this care space?", isPresented: $showRecipientRemoveConfirmation) {
+                if let recipient = recipientToRemove {
+                    Button("Remove person", role: .destructive) {
+                        recipientToRemove = nil
+                        Task { _ = await store.removeCareRecipient(recipient.id) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text(recipientToRemove.map { "Remove \($0.displayName) from this care space? This does not remove anyone’s app access." } ?? "This removes the person from the care-space record.")
+            }
             .confirmationDialog("Archive this medication plan?", isPresented: $showArchiveConfirmation) {
                 if let plan = planToArchive {
                     Button("Archive plan", role: .destructive) {
@@ -62,6 +89,115 @@ struct FamilyView: View {
                 Text(planToArchive.map { "\($0.name) will stop creating future reminders, while its history stays available." } ?? "This plan will stop creating future reminders, while its history stays available.")
             }
             .task { await store.refreshFamilyData() }
+        }
+    }
+
+    private var caredForSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .bottom) {
+                sectionHeading("PEOPLE CARED FOR", store.activeCareSpace?.name ?? "Current care space")
+                Spacer()
+                if store.canManageCareRecipients {
+                    Button {
+                        editingCareRecipient = nil
+                        store.clearCareRecipientError()
+                        showCareRecipientSheet = true
+                    } label: {
+                        Image(systemName: "person.crop.circle.badge.plus")
+                            .font(.headline)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(store.isCareRecipientMutating)
+                    .accessibilityLabel("Add a person cared for")
+                }
+            }
+
+            if store.isCareRecipientsLoading && store.careRecipients.isEmpty {
+                SurfaceCard(radius: 24) {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Loading people in this care space…")
+                            .font(.subheadline)
+                            .foregroundStyle(OneTheme.secondaryInk)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
+                }
+            } else if store.careRecipients.isEmpty {
+                SurfaceCard(radius: 24) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(systemName: "person.2")
+                            .font(.title2)
+                            .foregroundStyle(OneTheme.accentBlue)
+                        Text("No one added yet")
+                            .font(.headline)
+                        Text("Add one person, a couple, or everyone supported by this residence. They stay separate from people who can sign in to ONE.")
+                            .font(.subheadline)
+                            .foregroundStyle(OneTheme.secondaryInk)
+                        if store.canManageCareRecipients {
+                            Button("Add first person") {
+                                editingCareRecipient = nil
+                                store.clearCareRecipientError()
+                                showCareRecipientSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(OneTheme.accentBlue)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(18)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(store.careRecipients) { recipient in
+                        CareRecipientRow(
+                            recipient: recipient,
+                            canEdit: store.canManageCareRecipients
+                        ) {
+                            editingCareRecipient = recipient
+                            store.clearCareRecipientError()
+                            showCareRecipientSheet = true
+                        }
+                        .contentShape(Rectangle())
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if store.canManageCareRecipients {
+                                Button(role: .destructive) {
+                                    recipientToRemove = recipient
+                                    showRecipientRemoveConfirmation = true
+                                } label: {
+                                    Label("Remove", systemImage: "person.crop.circle.badge.minus")
+                                }
+                            }
+                        }
+                        if recipient.id != store.careRecipients.last?.id { Divider().padding(.leading, 58) }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .background(OneTheme.surface, in: .rect(cornerRadius: 26))
+                .overlay(.black.opacity(0.04), in: .rect(cornerRadius: 26))
+            }
+
+            if let error = store.careRecipientError {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(OneTheme.amber)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(error).font(.footnote).foregroundStyle(OneTheme.ink)
+                        Button("Try again") { Task { await store.refreshCareRecipients() } }
+                            .font(.footnote.weight(.semibold))
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                .background(OneTheme.surface, in: .rect(cornerRadius: 18))
+            }
+
+            Text(store.canManageCareRecipients
+                 ? "Names, relationships, and optional room labels describe care context only. They do not create accounts or grant access."
+                 : "These are the people supported in this care space. A caregiver manages this list.")
+                .font(.footnote)
+                .foregroundStyle(OneTheme.secondaryInk)
         }
     }
 
@@ -224,6 +360,162 @@ struct FamilyView: View {
             Text(eyebrow).font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(OneTheme.secondaryInk)
             Text(title).font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(OneTheme.ink)
         }
+    }
+}
+
+private struct CareRecipientRow: View {
+    let recipient: CareRecipient
+    let canEdit: Bool
+    let editAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(recipient.displayName.prefix(1))
+                .font(.headline.weight(.bold))
+                .foregroundStyle(OneTheme.accentBlue)
+                .frame(width: 42, height: 42)
+                .background(OneTheme.accentBlue.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(recipient.displayName)
+                    .font(.headline)
+                    .foregroundStyle(OneTheme.ink)
+                if let relationship = recipient.relationship {
+                    Text(relationship)
+                        .font(.subheadline)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+                if let roomLabel = recipient.roomLabel {
+                    Label(roomLabel, systemImage: "door.left.hand.closed")
+                        .font(.caption)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+            }
+
+            Spacer()
+
+            if canEdit {
+                Button(action: editAction) {
+                    Image(systemName: "pencil")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(OneTheme.accentBlue)
+                        .frame(width: 34, height: 34)
+                        .background(OneTheme.accentBlue.opacity(0.10), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit \(recipient.displayName)")
+            }
+        }
+        .padding(.vertical, 14)
+        .accessibilityElement(children: canEdit ? .contain : .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        [recipient.displayName, recipient.relationship, recipient.roomLabel]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+}
+
+private struct CareRecipientEditorSheet: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let recipient: CareRecipient?
+
+    @FocusState private var nameFocused: Bool
+    @State private var name: String
+    @State private var relationship: String
+    @State private var roomLabel: String
+
+    init(store: AppStore, recipient: CareRecipient?) {
+        self.store = store
+        self.recipient = recipient
+        _name = State(initialValue: recipient?.displayName ?? "")
+        _relationship = State(initialValue: recipient?.relationship ?? "")
+        _roomLabel = State(initialValue: recipient?.roomLabel ?? "")
+    }
+
+    private var isEditing: Bool { recipient != nil }
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var currentSetting: CareSetting { store.activeCareSpace?.careSetting ?? .home }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Name", text: $name)
+                        .textContentType(.name)
+                        .focused($nameFocused)
+                    TextField("Relationship (optional)", text: $relationship)
+                    TextField(currentSetting == .residence ? "Room or unit (optional)" : "Room or area (optional)", text: $roomLabel)
+                } header: {
+                    Text("Care details")
+                } footer: {
+                    Text(currentSetting == .residence
+                         ? "Room labels help distinguish several people in the same residence."
+                         : "Relationship and room details are optional and can be changed later.")
+                }
+
+                Section {
+                    Label("This person is part of the care context only.", systemImage: "person.crop.circle.badge.checkmark")
+                    Text("Adding someone here does not create a ONE login, household membership, or app permissions.")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+
+                if let error = store.careRecipientError {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(OneTheme.amber)
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .scrollContentBackground(.hidden)
+            .background(OneTheme.canvas.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Button {
+                    Task { await save() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if store.isCareRecipientMutating { ProgressView().controlSize(.small) }
+                        Text(store.isCareRecipientMutating ? "Saving…" : (isEditing ? "Save person" : "Add person"))
+                    }
+                }
+                .buttonStyle(OnePrimaryButtonStyle())
+                .disabled(trimmedName.isEmpty || store.isCareRecipientMutating)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .background(OneTheme.canvas)
+                .overlay(alignment: .top) {
+                    Divider().opacity(0.45).allowsHitTesting(false)
+                }
+            }
+            .navigationTitle(isEditing ? "Edit person" : "Add person")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .onAppear { nameFocused = recipient == nil }
+            .onChange(of: name) { _, value in if value.count > 120 { name = String(value.prefix(120)) } }
+            .onChange(of: relationship) { _, value in if value.count > 120 { relationship = String(value.prefix(120)) } }
+            .onChange(of: roomLabel) { _, value in if value.count > 120 { roomLabel = String(value.prefix(120)) } }
+            .onDisappear { store.clearCareRecipientError() }
+        }
+    }
+
+    private func save() async {
+        let saved: Bool
+        if let recipient {
+            saved = await store.updateCareRecipient(recipient, name: trimmedName, relationship: relationship, roomLabel: roomLabel)
+        } else {
+            saved = await store.createCareRecipient(name: trimmedName, relationship: relationship, roomLabel: roomLabel)
+        }
+        if saved { dismiss() }
     }
 }
 

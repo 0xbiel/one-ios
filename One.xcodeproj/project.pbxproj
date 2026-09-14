@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		7A4C4E4F06194B16BFE9C101 /* CareSpaceSwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B4C4E4F06194B16BFE9C102 /* CareSpaceSwitcherView.swift */; };
 		13E893E336E0BAD95E145068 /* RoomPlanPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */; };
 		14589C3B92BF0F25E33B5D5B /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC0A5231CEB851F1933D6E8 /* HomeView.swift */; };
 		14E12DA5BDC4760F05D58E4D /* OneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B8EAD036BB929430BC85C2 /* OneTests.swift */; };
@@ -42,6 +43,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		7B4C4E4F06194B16BFE9C102 /* CareSpaceSwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CareSpaceSwitcherView.swift; sourceTree = "<group>"; };
 		09509CA5012A8E0B3BD17AA4 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		102E67084C9F650302C0E8E7 /* BackendContracts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendContracts.swift; sourceTree = "<group>"; };
 		167FDD686D21A14C8CF73D98 /* OneTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -119,6 +121,7 @@
 			children = (
 				CF9A34AB694285CD5C4FAABC /* Assistant */,
 				C1037205DBC61DF05AECC493 /* Authentication */,
+				7C4C4E4F06194B16BFE9C103 /* CareSpaces */,
 				191298EFAAA2865264536FFA /* Events */,
 				03F85C9BA5DE09E1753DF350 /* Family */,
 				DFB575999655C42FFE1DD4C0 /* Home */,
@@ -127,6 +130,14 @@
 				6FAE557604E6D20373A51B07 /* Settings */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		7C4C4E4F06194B16BFE9C103 /* CareSpaces */ = {
+			isa = PBXGroup;
+			children = (
+				7B4C4E4F06194B16BFE9C102 /* CareSpaceSwitcherView.swift */,
+			);
+			path = CareSpaces;
 			sourceTree = "<group>";
 		};
 		56756CED8953D299CF20FC79 /* Models */ = {
@@ -338,6 +349,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7A4C4E4F06194B16BFE9C101 /* CareSpaceSwitcherView.swift in Sources */,
 				254147FE88EDD1993098F9A8 /* AppStore.swift in Sources */,
 				9BF68963ED6A0F9F06E97D73 /* AssistantView.swift in Sources */,
 				3BE3DC0F3373EAC34720DEA0 /* AuthenticationView.swift in Sources */,
