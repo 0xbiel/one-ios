@@ -11,11 +11,12 @@ struct CaregiverShell: View {
                     HomeView(store: store).tabItem { Label("Home", systemImage: "house.fill") }.tag("overview")
                     Color.clear.tabItem { Label("Map", systemImage: "map.fill") }.tag("map")
                     FamilyView(store: store).tabItem { Label("Family", systemImage: "person.2.fill") }.tag("family")
-                    EventsView(store: store).tabItem { Label("Events", systemImage: "bell") }.tag("events")
+                    CaregiverAssistantView(store: store).tabItem { Label("Assistant", systemImage: "sparkles") }.tag("assistant")
                     SettingsView(store: store).tabItem { Label("Account", systemImage: "person.crop.circle") }.tag("settings")
                 }
                 .toolbarBackground(.visible, for: .tabBar)
                 .toolbarBackground(.regularMaterial, for: .tabBar)
+                .tabBarMinimizeBehavior(.onScrollDown)
             }
         }
     }
@@ -34,29 +35,28 @@ struct ResidentShell: View {
 
 struct HomeView: View {
     @Bindable var store: AppStore
-    @State private var selectedPill = "Today"
     @State private var showCameraSetup = false
     @State private var showCareSpaces = false
-    private let pills = ["Today", "Objects", "Cameras", "Check-in"]
+
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        OneBrandMark(compact: true)
-                        Text("Your home, in view.").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1.4).foregroundStyle(OneTheme.ink)
-                        Text("A calm, human-readable picture of today.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
-                    }
+                VStack(alignment: .leading, spacing: 24) {
+                    header
                     CareSpaceContextButton(space: store.activeCareSpace, isLoading: store.isCareSpacesLoading) {
                         showCareSpaces = true
                     }
-                    if store.runtimeConfiguration.isDemoMode { cameraHero } else { liveCameraHero }
-                    ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 10) { ForEach(pills, id: \.self) { pill in Button { withAnimation(.snappy) { selectedPill = pill } } label: { Text(pill).font(.subheadline.weight(.semibold)).foregroundStyle(selectedPill == pill ? .white : OneTheme.ink).padding(.horizontal, 18).frame(height: 44).background(selectedPill == pill ? OneTheme.accentBlue : OneTheme.surface, in: Capsule()).overlay { if selectedPill != pill { Capsule().stroke(OneTheme.secondaryInk.opacity(0.3), lineWidth: 0.75) } } }.buttonStyle(.plain).accessibilityAddTraits(selectedPill == pill ? .isSelected : []) } } }.scrollIndicators(.hidden)
-                    if store.runtimeConfiguration.isDemoMode { contentForPill } else { liveContentForPill }
-                }.padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 34)
+                    todayCard
+                    homeAtGlance
+                    recentEvents
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 24)
             }
             .refreshable {
                 await store.refreshCareSpaces()
+                await store.refreshFamilyData()
                 await store.refreshLiveData()
             }
             .background(OneTheme.canvas.ignoresSafeArea())
@@ -68,6 +68,16 @@ struct HomeView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showCameraSetup) {
+            CameraManagerSheet(store: store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .task {
+            if store.careSpaces.isEmpty { await store.refreshCareSpaces() }
+            await store.refreshFamilyData()
+            await store.refreshLiveData()
+        }
 #if DEBUG
         .onAppear {
             if ProcessInfo.processInfo.arguments.contains("-one-show-care-spaces")
@@ -77,72 +87,401 @@ struct HomeView: View {
         }
 #endif
     }
-    private var cameraHero: some View { ZStack(alignment: .bottomLeading) { RoundedRectangle(cornerRadius: 30, style: .continuous).fill(LinearGradient(colors: [OneTheme.inverseSurface, OneTheme.accentBlue.opacity(0.82)], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 236); VStack { HStack { Label("LIVING ROOM CAMERA", systemImage: "video.fill").font(.caption.weight(.bold)).tracking(0.7).foregroundStyle(.white.opacity(0.9)); Spacer(); HStack(spacing: 6) { Circle().fill(OneTheme.accentCyan).frame(width: 9, height: 9); Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(.white) } }; Spacer(); Image(systemName: "camera.metering.center.weighted.average").font(.system(size: 76, weight: .thin)).foregroundStyle(.white.opacity(0.42)); Spacer(); HStack { Text("A steady view of the room").font(.title3.weight(.semibold)).foregroundStyle(.white); Spacer(); Image(systemName: "arrow.up.right").foregroundStyle(.white) } }.padding(20) }.accessibilityElement(children: .combine).accessibilityLabel("Living room camera, live. A steady view of the room.") }
-    private var primaryLiveCamera: PairedCamera? { store.pairedCameras.first }
-    private var hasOnlineCamera: Bool { store.pairedCameras.contains { $0.status == "online" } }
-    private var liveCameraHero: some View { ZStack(alignment: .bottomLeading) { RoundedRectangle(cornerRadius: 30, style: .continuous).fill(LinearGradient(colors: [OneTheme.inverseSurface, hasOnlineCamera ? OneTheme.accentBlue.opacity(0.78) : OneTheme.secondaryInk.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 236); VStack { HStack { Label((primaryLiveCamera?.name ?? "CAMERA SETUP").uppercased(), systemImage: "video.fill").font(.caption.weight(.bold)).tracking(0.7).foregroundStyle(.white.opacity(0.9)); Spacer(); Text(primaryLiveCamera?.status.uppercased() ?? "NOT PAIRED").font(.caption2.weight(.bold)).foregroundStyle(.white) }; Spacer(); Image(systemName: store.cameraCount == 0 ? "video.slash" : (hasOnlineCamera ? "video.fill" : "video.badge.ellipsis")).font(.system(size: 76, weight: .thin)).foregroundStyle(.white.opacity(0.42)); Spacer(); HStack { Text(store.cameraCount == 0 ? "No room camera connected" : (hasOnlineCamera ? "Live camera available" : "Camera paired · currently paused")).font(.title3.weight(.semibold)).foregroundStyle(.white); Spacer(); Image(systemName: hasOnlineCamera ? "checkmark.circle.fill" : "arrow.up.right").foregroundStyle(.white) } }.padding(20) }.accessibilityElement(children: .combine).accessibilityLabel(store.cameraCount == 0 ? "No room camera connected" : "\(store.cameraCount) paired camera devices, \(hasOnlineCamera ? "online" : "not currently online")") }
-    @ViewBuilder private var contentForPill: some View { if selectedPill == "Objects" { objectsSection } else if selectedPill == "Cameras" { camerasSection } else if selectedPill == "Check-in" { checkInSection } else { todaySection } }
-    @ViewBuilder private var liveContentForPill: some View { if selectedPill == "Objects" { liveObjectsSection } else if selectedPill == "Cameras" { liveCamerasSection } else if selectedPill == "Check-in" { liveCheckInSection } else { liveTodaySection } }
-    private var liveTodaySection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("TODAY", "Live observations"); if store.events.isEmpty { liveEmptyCard(title: "No observations yet", detail: "ONE will show backend observations here when the household records them.", symbol: "tray") } else { ForEach(store.events.prefix(3)) { event in EventRow(event: event) } }; liveHouseholdRows } }
-    private var liveObjectsSection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("MEMORY", "Mapped objects"); if store.scan.objects.isEmpty { liveEmptyCard(title: "No mapped objects yet", detail: "Upload a room map or record an observation to add household objects.", symbol: "square.3.layers.3d") } else { ForEach(store.scan.objects) { object in ObjectCard(title: object.name, subtitle: "Live backend object · \(object.confidence.title) confidence", symbol: "cube.fill", color: OneTheme.accentCyan) } } } }
-    private var liveCamerasSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .bottom) {
-                sectionHeading("CAMERAS", "Connected devices")
-                Spacer()
-                if store.role != .resident {
-                    Button {
-                        showCameraSetup = true
-                    } label: {
-                        Label("Pair camera", systemImage: "plus.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(OneTheme.accentBlue)
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(greeting)
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                    .tracking(-1.1)
+                    .foregroundStyle(OneTheme.ink)
+                if let person = selectedPersonName {
+                    Text("Here’s what matters for \(person) today.")
+                        .font(.subheadline)
+                        .foregroundStyle(OneTheme.secondaryInk)
                 }
             }
-            if store.pairedCameras.isEmpty {
-                liveEmptyCard(title: "No cameras connected", detail: "Pair a phone or laptop that will stay in the room. ONE will show it here only after the publisher code is completed.", symbol: "video.badge.plus")
-            } else {
-                ForEach(store.pairedCameras) { camera in
-                    SurfaceCard(radius: 24) {
-                        HStack(spacing: 14) {
-                            Image(systemName: camera.status == "online" ? "video.fill" : "video.slash")
-                                .font(.title2)
-                                .foregroundStyle(camera.status == "online" ? OneTheme.accentBlue : OneTheme.secondaryInk)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(camera.name).font(.headline)
-                                Text(camera.status == "online" ? "Connected to the local ONE backend" : camera.status.capitalized)
-                                    .font(.subheadline)
-                                    .foregroundStyle(OneTheme.secondaryInk)
-                            }
-                            Spacer()
-                            Circle()
-                                .fill(camera.status == "online" ? OneTheme.mint : OneTheme.amber)
-                                .frame(width: 11, height: 11)
-                                .accessibilityLabel(camera.status)
-                        }
-                        .padding(18)
-                    }
-                }
-            }
-            Text("Status comes from the authenticated local backend. Camera viewing remains consent-based.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
-        }
-        .sheet(isPresented: $showCameraSetup) {
-            CameraPairingSheet(store: store)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
+            Spacer(minLength: 12)
+            OneBrandMark(compact: true)
         }
     }
-    private var liveCheckInSection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("CHECK-IN", "A human signal"); if let event = store.events.first(where: { $0.kind == .checkIn }) { EventRow(event: event) } else { liveEmptyCard(title: "No check-in recorded", detail: "A check-in will appear here after the backend records one.", symbol: "checkmark.circle") } } }
-    private var liveHouseholdRows: some View { VStack(spacing: 0) { householdRow("Backend status", store.backendState.label, "network", OneTheme.accentBlue); Divider(); householdRow("Available observations", "\(store.events.count)", "list.bullet.rectangle", OneTheme.mint) }.padding(.horizontal, 4) }
-    private func liveEmptyCard(title: String, detail: String, symbol: String) -> some View { SurfaceCard(radius: 24) { Label { VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline); Text(detail).font(.subheadline).foregroundStyle(OneTheme.secondaryInk) } } icon: { Image(systemName: symbol).font(.title2).foregroundStyle(OneTheme.accentBlue) }.padding(18) } }
-    private var todaySection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("TODAY", "Observed objects"); ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 14) { ObjectCard(title: "Blue mug", subtitle: "Kitchen · remembered", symbol: "cup.and.saucer.fill", color: OneTheme.accentCyan); ObjectCard(title: "Front door", subtitle: "Entry · mapped", symbol: "door.left.hand.open", color: OneTheme.accentBlue); ObjectCard(title: "Reading chair", subtitle: "Living room", symbol: "chair.lounge.fill", color: OneTheme.mint) } }.scrollIndicators(.hidden); householdRows } }
-    private var objectsSection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("MEMORY", "Objects in the map"); ObjectCard(title: "Blue mug", subtitle: "Kitchen · high confidence", symbol: "cup.and.saucer.fill", color: OneTheme.accentCyan); ObjectCard(title: "Front door", subtitle: "Entry · medium confidence", symbol: "door.left.hand.open", color: OneTheme.accentBlue); Text("Pins are approximate and show a confidence radius.").font(.footnote).foregroundStyle(OneTheme.secondaryInk) } }
-    private var camerasSection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("CAMERAS", "Paired views"); SurfaceCard(radius: 24) { HStack { Image(systemName: "video.fill").font(.title2).foregroundStyle(OneTheme.accentBlue); VStack(alignment: .leading) { Text("Living room").font(.headline); Text(store.backendState == .connected ? "Backend connected · live on local network" : "Calibrated · \(store.backendState.label)").font(.subheadline).foregroundStyle(OneTheme.secondaryInk) }; Spacer(); Circle().fill(store.backendState == .unavailable ? OneTheme.amber : OneTheme.mint).frame(width: 12).accessibilityLabel(store.backendState.label) }.padding(18) }; Text("Camera viewing is local and consent-based.").font(.footnote).foregroundStyle(OneTheme.secondaryInk) } }
-    private var checkInSection: some View { VStack(alignment: .leading, spacing: 14) { sectionHeading("CHECK-IN", "A human signal"); SurfaceCard(radius: 24) { VStack(alignment: .leading, spacing: 12) { Label("Completed today", systemImage: "checkmark.circle.fill").font(.headline).foregroundStyle(OneTheme.mint); Text("A familiar morning check-in was completed. The trend is compared with the resident’s own recent rhythm.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk); Text("Observation, not diagnosis.").font(.caption.weight(.semibold)).foregroundStyle(OneTheme.amber) }.padding(20) } } }
-    private var householdRows: some View { VStack(spacing: 0) { householdRow("Household status", "All connected", "checkmark.circle.fill", OneTheme.mint); Divider(); householdRow("This week’s plan", "3 check-ins · 1 review", "calendar", OneTheme.accentBlue) }.padding(.horizontal, 4) }
-    private func householdRow(_ title: String, _ subtitle: String, _ symbol: String, _ color: Color) -> some View { HStack(spacing: 12) { Image(systemName: symbol).foregroundStyle(color).frame(width: 28); VStack(alignment: .leading) { Text(title).font(.headline); Text(subtitle).font(.subheadline).foregroundStyle(OneTheme.secondaryInk) }; Spacer(); Image(systemName: "chevron.right").foregroundStyle(.tertiary) }.padding(.vertical, 14) }
-    private func sectionHeading(_ eyebrow: String, _ title: String) -> some View { VStack(alignment: .leading, spacing: 4) { Text(eyebrow).font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(OneTheme.secondaryInk); Text(title).font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(OneTheme.ink) } }
+
+    private var greeting: String {
+        guard let fullName = store.currentUserName?.trimmingCharacters(in: .whitespacesAndNewlines), !fullName.isEmpty else {
+            return "Welcome back"
+        }
+        return "Welcome back, \(fullName.split(separator: " ").first.map(String.init) ?? fullName)"
+    }
+
+    private var selectedPersonName: String? {
+        if store.selectedSubjectName != "Everyone" { return store.selectedSubjectName }
+        return store.careRecipients.first?.displayName
+    }
+
+    private var todayCard: some View {
+        SurfaceCard(radius: 28) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    sectionHeading("TODAY", selectedPersonName ?? "Care overview")
+                    Spacer()
+                    if store.isMedicationLoading { ProgressView().controlSize(.small) }
+                }
+
+                if let dose = nextDose {
+                    HStack(spacing: 12) {
+                        Image(systemName: dose.status == .acknowledged ? "checkmark.circle.fill" : "pills.fill")
+                            .font(.title2)
+                            .foregroundStyle(dose.status == .acknowledged ? OneTheme.mint : OneTheme.accentBlue)
+                            .frame(width: 42, height: 42)
+                            .background((dose.status == .acknowledged ? OneTheme.mint : OneTheme.accentBlue).opacity(0.10), in: Circle())
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(dose.medicationName).font(.headline)
+                            Text(dose.status == .acknowledged ? completionText(for: dose) : "Due \(dose.scheduledAt.formatted(date: .omitted, time: .shortened))")
+                                .font(.subheadline)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                        }
+                        Spacer()
+                    }
+                } else {
+                    Label("Nothing scheduled right now", systemImage: "checkmark.circle")
+                        .font(.headline)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+
+                HStack(spacing: 10) {
+                    Label("\(store.events.count) events", systemImage: "bell")
+                    if let checkIn = store.events.first(where: { $0.kind == .checkIn }) {
+                        Label(checkIn.timestamp.formatted(date: .omitted, time: .shortened), systemImage: "checkmark.bubble")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(OneTheme.secondaryInk)
+
+                Button {
+                    store.selectedTab = "family"
+                } label: {
+                    HStack {
+                        Text("Open today’s plan").fontWeight(.semibold)
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(OneTheme.accentBlue)
+            }
+            .padding(18)
+        }
+    }
+
+    private var nextDose: MedicationDose? {
+        store.medicationDoses.first(where: { $0.status == .scheduled || $0.status == .needsConfirmation }) ?? store.medicationDoses.first
+    }
+
+    private func completionText(for dose: MedicationDose) -> String {
+        var parts = ["Done"]
+        if let marker = dose.markedByName { parts.append("by \(marker)") }
+        if let markedAt = dose.markedAt { parts.append(markedAt.formatted(date: .omitted, time: .shortened)) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var hasOnlineCamera: Bool { store.pairedCameras.contains { $0.status == "online" } }
+
+    private var homeAtGlance: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeading("HOME", "At a glance")
+            HStack(spacing: 12) {
+                Button { store.selectedTab = "map" } label: {
+                    glanceCard(
+                        title: "Map",
+                        detail: store.scene.isRenderable3D ? "3D home ready" : (store.scan.objects.isEmpty ? "Set up your home" : "\(store.scan.objects.count) mapped objects"),
+                        symbol: "map.fill",
+                        status: store.scene.isRenderable3D ? OneTheme.mint : OneTheme.accentBlue
+                    )
+                }
+                .buttonStyle(.plain)
+
+                Button { showCameraSetup = true } label: {
+                    glanceCard(
+                        title: "Cameras",
+                        detail: store.cameraCount == 0 ? "Pair a camera" : "\(store.cameraCount) paired · \(hasOnlineCamera ? "online" : "offline")",
+                        symbol: hasOnlineCamera ? "video.fill" : "video.badge.ellipsis",
+                        status: hasOnlineCamera ? OneTheme.mint : OneTheme.amber
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func glanceCard(title: String, detail: String, symbol: String, status: Color) -> some View {
+        SurfaceCard(radius: 28) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Image(systemName: symbol).font(.title2).foregroundStyle(OneTheme.accentBlue)
+                    Spacer()
+                    Circle().fill(status).frame(width: 9, height: 9)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.headline).foregroundStyle(OneTheme.ink)
+                    Text(detail).font(.caption).foregroundStyle(OneTheme.secondaryInk).lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+            .padding(16)
+        }
+    }
+
+    private var recentEvents: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .bottom) {
+                sectionHeading("RECENT", "Events")
+                Spacer()
+                NavigationLink("See all") { EventsView(store: store) }
+                    .font(.subheadline.weight(.semibold))
+            }
+            if store.events.isEmpty {
+                SurfaceCard(radius: 28) {
+                    Label("No recent events", systemImage: "checkmark.circle")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(OneTheme.secondaryInk)
+                        .padding(18)
+                }
+            } else {
+                SurfaceCard(radius: 28) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(store.events.prefix(3))) { event in
+                            NavigationLink { EventDetailView(event: event) } label: { EventRow(event: event) }
+                                .buttonStyle(.plain)
+                            if event.id != store.events.prefix(3).last?.id { Divider() }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
+    }
+
+    private func sectionHeading(_ eyebrow: String, _ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(eyebrow).font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(OneTheme.secondaryInk)
+            Text(title).font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(OneTheme.ink)
+        }
+    }
+}
+
+private struct CameraManagerSheet: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var showPairing = false
+    @State private var editingCamera: PairedCamera?
+    @State private var cameraToDelete: PairedCamera?
+    @State private var showDeleteConfirmation = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if store.pairedCameras.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("No cameras yet", systemImage: "video.badge.plus")
+                                .font(.headline)
+                                .foregroundStyle(OneTheme.ink)
+                            Text("Pair a phone, Mac, or browser camera and choose which room it belongs to.")
+                                .font(.subheadline)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                            Button("Add camera") { showPairing = true }
+                                .buttonStyle(.borderedProminent)
+                                .tint(OneTheme.accentBlue)
+                        }
+                        .padding(.vertical, 6)
+                    } else {
+                        ForEach(store.pairedCameras) { camera in
+                            Button {
+                                editingCamera = camera
+                            } label: {
+                                CameraManagerRow(camera: camera, roomName: roomName(for: camera.roomID))
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    cameraToDelete = camera
+                                    showDeleteConfirmation = true
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Connected cameras")
+                } footer: {
+                    if !store.pairedCameras.isEmpty {
+                        Text("Tap a camera to rename it or move it to another room. Swipe left to remove it.")
+                    }
+                }
+
+                if let error = store.cameraPairingError, !error.isEmpty {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(OneTheme.amber)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(OneTheme.canvas.ignoresSafeArea())
+            .navigationTitle("Cameras")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showPairing = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add camera")
+                }
+            }
+            .task { await store.refreshCameraConfiguration() }
+            .sheet(isPresented: $showPairing, onDismiss: {
+                Task { await store.refreshCameraConfiguration() }
+            }) {
+                CameraPairingSheet(store: store)
+            }
+            .sheet(item: $editingCamera) { camera in
+                CameraEditorSheet(store: store, camera: camera)
+            }
+            .confirmationDialog("Remove this camera?", isPresented: $showDeleteConfirmation) {
+                if let cameraToDelete {
+                    Button("Remove camera", role: .destructive) {
+                        let camera = cameraToDelete
+                        self.cameraToDelete = nil
+                        Task { _ = await store.deleteCamera(camera) }
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text(cameraToDelete.map { "Remove \($0.name) from this care space? The camera will need to be paired again before it can reconnect." } ?? "This camera will be disconnected from the care space.")
+            }
+        }
+    }
+
+    private func roomName(for id: UUID?) -> String {
+        guard let id else { return "No room assigned" }
+        return store.cameraRooms.first(where: { $0.id == id })?.name ?? "Assigned room"
+    }
+}
+
+private struct CameraManagerRow: View {
+    let camera: PairedCamera
+    let roomName: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: camera.status == "online" ? "video.fill" : "video.slash.fill")
+                .font(.headline)
+                .foregroundStyle(camera.status == "online" ? OneTheme.mint : OneTheme.secondaryInk)
+                .frame(width: 40, height: 40)
+                .background((camera.status == "online" ? OneTheme.mint : OneTheme.secondaryInk).opacity(0.10), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(camera.name)
+                    .font(.headline)
+                    .foregroundStyle(OneTheme.ink)
+                Text(roomName)
+                    .font(.subheadline)
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+            Spacer(minLength: 8)
+            Text(camera.status.capitalized)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(camera.status == "online" ? OneTheme.mint : OneTheme.secondaryInk)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(OneTheme.secondaryInk.opacity(0.6))
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct CameraEditorSheet: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let camera: PairedCamera
+    @State private var name: String
+    @State private var roomID: UUID?
+    @State private var showDeleteConfirmation = false
+
+    init(store: AppStore, camera: PairedCamera) {
+        self.store = store
+        self.camera = camera
+        _name = State(initialValue: camera.name)
+        _roomID = State(initialValue: camera.roomID)
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !store.isCameraMutating
+            && (name.trimmingCharacters(in: .whitespacesAndNewlines) != camera.name || roomID != camera.roomID)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Camera") {
+                    TextField("Camera name", text: $name)
+                        .textInputAutocapitalization(.words)
+                        .onChange(of: name) { _, value in if value.count > 120 { name = String(value.prefix(120)) } }
+                    Picker("Room", selection: $roomID) {
+                        Text("No room assigned").tag(Optional<UUID>.none)
+                        ForEach(store.cameraRooms) { room in
+                            Text(room.name).tag(Optional(room.id))
+                        }
+                    }
+                }
+
+                Section {
+                    Label(camera.status.capitalized, systemImage: camera.status == "online" ? "checkmark.circle.fill" : "wifi.slash")
+                        .foregroundStyle(camera.status == "online" ? OneTheme.mint : OneTheme.secondaryInk)
+                    Text("Changing the room or camera details can require camera positioning to be refreshed on the map.")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+
+                if let error = store.cameraPairingError, !error.isEmpty {
+                    Section { Text(error).foregroundStyle(.red) }
+                }
+
+                Section {
+                    Button("Remove camera", role: .destructive) { showDeleteConfirmation = true }
+                        .disabled(store.isCameraMutating)
+                } footer: {
+                    Text("Removing a camera revokes its connection. Pair it again if you want to use it later.")
+                }
+            }
+            .navigationTitle("Edit camera")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(store.isCameraMutating ? "Saving…" : "Save") {
+                        Task {
+                            if await store.updateCamera(camera, name: name, roomID: roomID) { dismiss() }
+                        }
+                    }
+                    .disabled(!canSave)
+                }
+            }
+            .confirmationDialog("Remove this camera?", isPresented: $showDeleteConfirmation) {
+                Button("Remove camera", role: .destructive) {
+                    Task {
+                        if await store.deleteCamera(camera) { dismiss() }
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+            }
+        }
+    }
 }
 
 private struct CameraPairingSheet: View {
@@ -150,6 +489,7 @@ private struct CameraPairingSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var label = "Room camera"
+    @State private var selectedRoomID: UUID?
     @State private var step: Step = .details
     @State private var validationMessage: String?
     @FocusState private var isNameFocused: Bool
@@ -177,37 +517,50 @@ private struct CameraPairingSheet: View {
                         .frame(width: contentWidth)
                         .frame(maxWidth: .infinity)
 
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            pairingHero
-                                .padding(.top, 28)
+                    ScrollViewReader { scrollProxy in
+                        ScrollView(showsIndicators: false) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                pairingHero
+                                    .padding(.top, 28)
 
-                            stepContent
-                                .padding(.top, 22)
+                                stepContent
+                                    .padding(.top, 22)
 
-                            if let message = validationMessage ?? store.cameraPairingError {
-                                Label(message, systemImage: "exclamationmark.triangle.fill")
-                                    .font(.footnote)
-                                    .foregroundStyle(OneTheme.amber)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .padding(14)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(OneTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                    .padding(.top, 16)
+                                if let message = validationMessage ?? store.cameraPairingError {
+                                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                                        .font(.footnote)
+                                        .foregroundStyle(OneTheme.amber)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .padding(14)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(OneTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                        .padding(.top, 16)
+                                }
+                            }
+                            .frame(width: contentWidth, alignment: .leading)
+                            .frame(maxWidth: .infinity)
+                            .padding(.bottom, 18)
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: step)
+                        }
+                        .scrollDismissesKeyboard(.interactively)
+                        .onChange(of: isNameFocused) { _, isFocused in
+                            guard isFocused else { return }
+                            Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 160_000_000)
+                                guard !Task.isCancelled, isNameFocused else { return }
+                                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                                    scrollProxy.scrollTo("camera-pairing-name", anchor: .bottom)
+                                }
                             }
                         }
-                        .frame(width: contentWidth, alignment: .leading)
-                        .frame(maxWidth: .infinity)
-                        .padding(.bottom, 18)
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: step)
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    pairingFooter
-                        .frame(width: contentWidth)
+                    pairingFooter(contentWidth: contentWidth)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 10)
                         .padding(.bottom, 8)
+                        .background(OneTheme.canvas.opacity(0.98).ignoresSafeArea(edges: .horizontal))
                 }
             }
             .background(OneBackground())
@@ -322,6 +675,30 @@ private struct CameraPairingSheet: View {
                     }
                     .onSubmit { beginPairing() }
                     .accessibilityIdentifier("camera-pairing-name")
+                    .id("camera-pairing-name")
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Room")
+                        .font(.headline)
+                        .foregroundStyle(OneTheme.ink)
+                    Picker("Room", selection: $selectedRoomID) {
+                        Text("No room assigned").tag(Optional<UUID>.none)
+                        ForEach(store.cameraRooms) { room in
+                            Text(room.name).tag(Optional(room.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(OneTheme.accentBlue)
+
+                    Text(store.cameraRooms.isEmpty
+                         ? "No saved rooms are available yet. You can pair the camera now and assign a room later."
+                         : "Choose where this camera will stay. You can change the room later from Cameras.")
+                        .font(.caption)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Label("This pairs a camera publisher only. It does not sign anyone into this care space.", systemImage: "lock.shield")
                     .font(.caption)
@@ -433,7 +810,7 @@ private struct CameraPairingSheet: View {
         }
     }
 
-    private var pairingFooter: some View {
+    private func pairingFooter(contentWidth: CGFloat) -> some View {
         VStack(spacing: 12) {
             HStack(spacing: 7) {
                 ForEach(Step.allCases, id: \.rawValue) { item in
@@ -476,16 +853,10 @@ private struct CameraPairingSheet: View {
                 .accessibilityIdentifier("camera-pairing-continue")
             }
         }
+        .frame(width: contentWidth)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 2)
         .padding(.vertical, 12)
-        .background(OneTheme.canvas.opacity(0.98))
-        .overlay {
-            Rectangle()
-                .fill(OneTheme.secondaryInk.opacity(0.10))
-                .frame(height: 0.5)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .allowsHitTesting(false)
-        }
     }
 
     private var primaryButtonTitle: String {
@@ -526,7 +897,7 @@ private struct CameraPairingSheet: View {
         validationMessage = nil
 
         Task { @MainActor in
-            await store.startCameraPairing(label: normalizedLabel)
+            await store.startCameraPairing(label: normalizedLabel, roomID: selectedRoomID)
             guard store.cameraPairingChallenge != nil else {
                 validationMessage = store.cameraPairingError ?? "Could not create a camera pairing code."
                 return
@@ -543,7 +914,7 @@ private struct CameraPairingSheet: View {
         validationMessage = nil
 
         Task { @MainActor in
-            await store.startCameraPairing(label: normalizedLabel)
+            await store.startCameraPairing(label: normalizedLabel, roomID: selectedRoomID)
             if store.cameraPairingChallenge == nil {
                 validationMessage = store.cameraPairingError ?? "Could not create a new camera pairing code."
             }

@@ -100,28 +100,45 @@ struct LoginView: View {
             ZStack {
                 OneBackground()
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        authHeader
-                        if stage == .welcome {
-                            welcomeContent
-                        } else {
-                            formContent
+                ScrollViewReader { scrollProxy in
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            authHeader
+                            if stage == .welcome {
+                                welcomeContent
+                            } else {
+                                formContent
+                            }
+                        }
+                        .frame(width: contentWidth, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 14)
+                        .padding(.bottom, 22)
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onChange(of: focusedField) { _, field in
+                        guard let field else { return }
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 160_000_000)
+                            guard !Task.isCancelled, focusedField == field else { return }
+                            withAnimation(reduceMotionAnimation) {
+                                scrollProxy.scrollTo(field, anchor: .bottom)
+                            }
                         }
                     }
-                    .frame(width: contentWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 14)
-                    .padding(.bottom, 22)
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if stage == .form {
-                    authFooter
-                        .frame(width: contentWidth)
+                    authFooter(contentWidth: contentWidth)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 10)
                         .padding(.bottom, 8)
+                        .background(
+                            OneTheme.canvas
+                                .opacity(0.98)
+                                .ignoresSafeArea(edges: [.horizontal, .bottom])
+                        )
                 }
             }
         }
@@ -284,15 +301,15 @@ struct LoginView: View {
                 .foregroundStyle(OneTheme.ink)
                 .padding(.top, 7)
 
+            emailVerificationCodeField
+                .padding(.top, 28)
+
             Text("We sent a six-digit code to \(trimmedEmail). It expires shortly.")
                 .font(.body)
                 .foregroundStyle(OneTheme.secondaryInk)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 10)
-
-            emailVerificationCodeField
-                .padding(.top, 28)
 
             Button(action: resendEmailCode) {
                 Text(isSubmitting ? "Sending…" : "Send a new code")
@@ -436,8 +453,10 @@ struct LoginView: View {
                                 .textContentType(.emailAddress)
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.emailAddress)
+                            authInlineMessage
                         } else {
                             pairingCodeField
+                            authInlineMessage
                         }
                     } else {
                         authField("Invitation code", systemImage: "number", text: $pairingCode, field: .pairingCode)
@@ -448,6 +467,7 @@ struct LoginView: View {
                                 pairingCode = sanitizedCode(value)
                             }
                             .accessibilityLabel("Invitation code")
+                        authInlineMessage
                         authField("Invited email (optional)", systemImage: "envelope", text: $email, field: .email)
                             .textContentType(.emailAddress)
                             .textInputAutocapitalization(.never)
@@ -553,6 +573,7 @@ struct LoginView: View {
                 .allowsHitTesting(false)
         }
         .frame(maxWidth: .infinity, alignment: .center)
+        .id(field)
     }
 
     private func verificationDigit(at index: Int, code: String, field: Field) -> some View {
@@ -574,7 +595,27 @@ struct LoginView: View {
         .frame(width: 30, height: 52)
     }
 
-    private var authFooter: some View {
+    @ViewBuilder
+    private var authInlineMessage: some View {
+        if mode == 0 && signInMethod == .pairing {
+            Text("Use the six-digit code from your ONE setup.")
+                .font(.caption)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if mode == 0 && signInMethod == .email {
+            Text("No password required. ONE uses a short-lived email code.")
+                .font(.caption)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if mode == 2 {
+            Text("Invitation codes are single-use.")
+                .font(.caption)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func authFooter(contentWidth: CGFloat) -> some View {
         VStack(spacing: 8) {
             HStack(spacing: 12) {
                 Button(action: goBack) {
@@ -605,22 +646,11 @@ struct LoginView: View {
                 .disabled(isSubmitting)
                 .accessibilityHint("Sign in securely to your ONE care space")
             }
-
-            Text(footerMessage)
-                .font(.caption)
-                .foregroundStyle(OneTheme.secondaryInk)
-                .multilineTextAlignment(.center)
         }
+        .frame(width: contentWidth)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 2)
         .padding(.vertical, 12)
-        .background(OneTheme.canvas.opacity(0.98))
-        .overlay {
-            Rectangle()
-                .fill(OneTheme.secondaryInk.opacity(0.10))
-                .frame(height: 0.5)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .allowsHitTesting(false)
-        }
     }
 
     private func authField(_ title: String, systemImage: String, text: Binding<String>, field: Field) -> some View {
@@ -654,6 +684,7 @@ struct LoginView: View {
                 .allowsHitTesting(false)
         }
         .accessibilityIdentifier("auth-field-\(field.rawValue)")
+        .id(field)
     }
 
     private func focusNext(after field: Field) {
@@ -762,19 +793,6 @@ struct LoginView: View {
         } else if emailChallenge && !isSixDigitCode(emailCode) {
             focusedField = .emailCode
         }
-    }
-
-    private var footerMessage: String {
-        if mode == 0 && signInMethod == .pairing {
-            return "Use the six-digit code from your ONE setup."
-        }
-        if emailChallenge {
-            return "Enter the code sent to your email."
-        }
-        if mode == 2 {
-            return "Invitation codes are single-use."
-        }
-        return "No password required. ONE uses a short-lived email code."
     }
 
     private func isSixDigitCode(_ value: String) -> Bool {

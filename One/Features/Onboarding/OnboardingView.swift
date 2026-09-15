@@ -33,14 +33,6 @@ struct OnboardingView: View {
             purpose: "Family sharing",
             symbol: "person.2.fill",
             tint: OneTheme.mint
-        ),
-        OneOnboardingPage(
-            eyebrow: "Keep reminders together",
-            title: "Stay organized, together.",
-            body: "Keep human-entered reminders and acknowledgements in one place without presenting medical advice.",
-            purpose: "Medication reminders",
-            symbol: "cross.case.fill",
-            tint: OneTheme.amber
         )
     ]
 
@@ -109,11 +101,15 @@ struct OnboardingView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                onboardingFooter
-                    .frame(width: contentWidth)
+                onboardingFooter(contentWidth: contentWidth)
                     .frame(maxWidth: .infinity)
                     .padding(.top, 10)
                     .padding(.bottom, 8)
+                    .background(
+                        OneTheme.canvas
+                            .opacity(0.98)
+                            .ignoresSafeArea(edges: [.horizontal, .bottom])
+                    )
             }
         }
         .background(OneBackground())
@@ -219,7 +215,7 @@ struct OnboardingView: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    private var onboardingFooter: some View {
+    private func onboardingFooter(contentWidth: CGFloat) -> some View {
         VStack(spacing: 12) {
             HStack(spacing: 7) {
                 ForEach(pages.indices, id: \.self) { index in
@@ -263,16 +259,10 @@ struct OnboardingView: View {
                 .accessibilityIdentifier("onboarding-continue")
             }
         }
+        .frame(width: contentWidth)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 2)
         .padding(.vertical, 12)
-        .background(OneTheme.canvas.opacity(0.98))
-        .overlay {
-            Rectangle()
-                .fill(OneTheme.secondaryInk.opacity(0.10))
-                .frame(height: 0.5)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .allowsHitTesting(false)
-        }
     }
 
     private func advance() {

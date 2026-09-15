@@ -20,17 +20,33 @@ struct SettingsView: View {
                 }
 
                 Section("Privacy and consent") {
-                    ForEach(store.consents) { consent in
+                    if store.isConsentsLoading {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Loading your privacy choices…")
+                                .font(.subheadline)
+                                .foregroundStyle(OneTheme.secondaryInk)
+                        }
+                    }
+                    ForEach(store.privacyConsents) { consent in
                         Toggle(
                             consent.purpose,
                             isOn: Binding(
-                                get: { consent.enabled },
-                                set: { _ in store.toggleConsent(consent) }
+                                get: { store.privacyConsents.first(where: { $0.id == consent.id })?.enabled ?? false },
+                                set: { value in
+                                    Task { _ = await store.setConsent(consent, enabled: value) }
+                                }
                             )
                         )
                         .tint(OneTheme.accentBlue)
+                        .disabled(store.isConsentMutating || store.isConsentsLoading)
                     }
-                    Text("Sensitive room, audio, and clip data stays local unless you explicitly enable sharing.")
+                    if let error = store.consentError {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(OneTheme.amber)
+                    }
+                    Text("Sensitive room, audio, and clip data stays local unless you explicitly enable sharing. Medication reminders belong to each cared-for person and can be enabled from that person’s profile.")
                         .font(.footnote)
                 }
 
@@ -69,6 +85,7 @@ struct SettingsView: View {
             .navigationTitle("Account")
             .task {
                 if store.careSpaces.isEmpty { await store.refreshCareSpaces() }
+                await store.refreshConsents()
             }
         }
         .sheet(isPresented: $showCareSpaces) {

@@ -47,8 +47,8 @@ struct MapView: View {
                 .tabItem { Label("Family", systemImage: "person.2.fill") }
                 .tag("family")
             Color.clear
-                .tabItem { Label("Events", systemImage: "bell") }
-                .tag("events")
+                .tabItem { Label("Assistant", systemImage: "sparkles") }
+                .tag("assistant")
             Color.clear
                 .tabItem { Label("Account", systemImage: "person.crop.circle") }
                 .tag("settings")
@@ -190,6 +190,7 @@ struct ScanView: View {
     @State private var step: RoomScanSetupStep = .prepare
     @State private var isCapturing = false
     @State private var showCapture = false
+    @State private var isCancellingCapture = false
     @State private var captureError: String?
     @State private var selectedCameraID: UUID?
 
@@ -222,7 +223,11 @@ struct ScanView: View {
                             .padding(.bottom, 24)
                     }
                 }
-                .safeAreaInset(edge: .bottom, spacing: 0) { setupFooter }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    setupFooter
+                        .frame(maxWidth: .infinity)
+                        .background(OneTheme.canvas.opacity(0.98).ignoresSafeArea(edges: .horizontal))
+                }
             }
         }
         .background(OneBackground())
@@ -230,6 +235,11 @@ struct ScanView: View {
         .interactiveDismissDisabled(showCapture || store.isRoomPlanUploading)
         .toolbar {
             if showCapture && canCaptureRoom {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", role: .cancel) {
+                        cancelCapture()
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isCapturing = false
@@ -472,10 +482,10 @@ struct ScanView: View {
                 .disabled(store.isRoomPlanUploading || (step == .prepare && !canCaptureRoom))
             }
         }
+        .frame(maxWidth: 620)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(OneTheme.canvas.opacity(0.98))
-        .overlay(alignment: .top) { Rectangle().fill(OneTheme.secondaryInk.opacity(0.10)).frame(height: 0.5) }
     }
 
     private var primaryActionTitle: String {
@@ -497,6 +507,7 @@ struct ScanView: View {
         case .scan:
             captureError = nil
             store.authError = nil
+            isCancellingCapture = false
             showCapture = true
             isCapturing = true
         case .complete:
@@ -507,6 +518,7 @@ struct ScanView: View {
     private func handleRoomPlanResult(_ result: Result<RoomPlanCaptureResult, RoomPlanCaptureError>) {
         isCapturing = false
         showCapture = false
+        guard !isCancellingCapture else { return }
         switch result {
         case let .success(capture):
             captureError = nil
@@ -524,6 +536,7 @@ struct ScanView: View {
     private func handleARVideoResult(_ result: Result<ARVideoRoomCaptureResult, RoomPlanCaptureError>) {
         isCapturing = false
         showCapture = false
+        guard !isCancellingCapture else { return }
         selectedCameraID = nil
         switch result {
         case let .success(capture):
@@ -537,5 +550,13 @@ struct ScanView: View {
         case let .failure(error):
             captureError = error.localizedDescription
         }
+    }
+
+    private func cancelCapture() {
+        guard showCapture, !store.isRoomPlanUploading else { return }
+        isCancellingCapture = true
+        isCapturing = false
+        showCapture = false
+        captureError = nil
     }
 }

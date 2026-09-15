@@ -100,15 +100,17 @@ struct CareRecipient: Identifiable, Codable, Sendable, Equatable {
     var displayName: String
     var relationship: String?
     var roomLabel: String?
+    var medicationRemindersEnabled: Bool?
     let createdAt: Date
 
     var name: String { displayName }
 
-    init(id: UUID, displayName: String, relationship: String? = nil, roomLabel: String? = nil, createdAt: Date = Date()) {
+    init(id: UUID, displayName: String, relationship: String? = nil, roomLabel: String? = nil, medicationRemindersEnabled: Bool? = nil, createdAt: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.relationship = relationship
         self.roomLabel = roomLabel
+        self.medicationRemindersEnabled = medicationRemindersEnabled
         self.createdAt = createdAt
     }
 }
@@ -178,7 +180,10 @@ struct MedicationDose: Codable, Identifiable, Sendable {
     var assignedCaregiverName: String?
     var scheduleRule: String = ""
     var subjectUserID: UUID? = nil
+    var careRecipientID: UUID? = nil
     var planID: UUID? = nil
+    var markedByName: String? = nil
+    var markedAt: Date? = nil
 }
 
 enum ObservationConfidence: String, Codable, CaseIterable {
@@ -194,6 +199,26 @@ struct ConsentRecord: Codable, Identifiable, Sendable {
     var enabled: Bool
     let policyVersion: String
     let updatedAt: Date
+    let subjectUserID: UUID?
+    let careRecipientID: UUID?
+
+    init(
+        id: UUID,
+        purpose: String,
+        enabled: Bool,
+        policyVersion: String,
+        updatedAt: Date,
+        subjectUserID: UUID? = nil,
+        careRecipientID: UUID? = nil
+    ) {
+        self.id = id
+        self.purpose = purpose
+        self.enabled = enabled
+        self.policyVersion = policyVersion
+        self.updatedAt = updatedAt
+        self.subjectUserID = subjectUserID
+        self.careRecipientID = careRecipientID
+    }
 }
 
 struct RoomObject: Codable, Identifiable, Sendable {
@@ -283,6 +308,11 @@ struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
     let name: String
     let roomID: UUID?
     let status: String
+}
+
+struct CameraRoom: Identifiable, Codable, Sendable, Equatable {
+    let id: UUID
+    let name: String
 }
 
 enum CameraRegistrationState: String, Codable, Sendable, Equatable {

@@ -7,7 +7,7 @@ struct CareSpaceContextButton: View {
 
     var body: some View {
         Button(action: action) {
-            LiquidGlassSurface(radius: 20) {
+            LiquidGlassSurface(radius: 28) {
                 HStack(spacing: 14) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -209,17 +209,13 @@ struct CareSpaceSwitcherView: View {
             Label("Add care space", systemImage: "plus")
         }
         .buttonStyle(OnePrimaryButtonStyle())
+        .frame(maxWidth: .infinity)
         .disabled(store.isCareSpaceMutating)
         .accessibilityIdentifier("care-space-add")
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .background(OneTheme.canvas)
-        .overlay(alignment: .top) {
-            Divider()
-                .opacity(0.45)
-                .allowsHitTesting(false)
-        }
+        .background(OneTheme.canvas.ignoresSafeArea(edges: .horizontal))
     }
 }
 
@@ -312,25 +308,37 @@ private struct CreateCareSpaceView: View {
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                nameCard
-                settingCard
-                supportCard
-                if let error = store.careSpaceError { errorBanner(error) }
-                Label("ONE supports attention and human review. It does not provide a diagnosis.", systemImage: "lock.shield")
-                    .font(.footnote)
-                    .foregroundStyle(OneTheme.secondaryInk)
-                    .fixedSize(horizontal: false, vertical: true)
+        ScrollViewReader { scrollProxy in
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+                    header
+                    nameCard
+                    settingCard
+                    supportCard
+                    if let error = store.careSpaceError { errorBanner(error) }
+                    Label("ONE supports attention and human review. It does not provide a diagnosis.", systemImage: "lock.shield")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: 680, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
             }
-            .frame(maxWidth: 680, alignment: .leading)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 20)
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: nameIsFocused) { _, isFocused in
+                guard isFocused else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 160_000_000)
+                    guard !Task.isCancelled, nameIsFocused else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        scrollProxy.scrollTo("care-space-name", anchor: .bottom)
+                    }
+                }
+            }
         }
-        .scrollDismissesKeyboard(.interactively)
         .background(OneTheme.canvas.ignoresSafeArea())
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .navigationTitle("New care space")
@@ -378,6 +386,7 @@ private struct CreateCareSpaceView: View {
                     .frame(minHeight: 50)
                     .background(OneTheme.canvas, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .accessibilityIdentifier("care-space-name")
+                    .id("care-space-name")
             }
             .padding(18)
         }
@@ -472,16 +481,12 @@ private struct CreateCareSpaceView: View {
             }
         }
         .buttonStyle(OnePrimaryButtonStyle())
+        .frame(maxWidth: .infinity)
         .disabled(trimmedName.isEmpty || store.isCareSpaceMutating)
         .accessibilityIdentifier("care-space-create")
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .background(OneTheme.canvas)
-        .overlay(alignment: .top) {
-            Divider()
-                .opacity(0.45)
-                .allowsHitTesting(false)
-        }
+        .background(OneTheme.canvas.ignoresSafeArea(edges: .horizontal))
     }
 }

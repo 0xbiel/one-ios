@@ -27,6 +27,81 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(store.medicationDoses.first(where: { $0.id == doseID })?.status, .acknowledged)
     }
 
+    func testDemoMedicationSubjectSelectionFiltersReminders() throws {
+        let store = AppStore.demo
+        let first = try XCTUnwrap(store.careRecipients.first)
+        let second = try XCTUnwrap(store.careRecipients.dropFirst().first)
+
+        XCTAssertTrue(store.medicationDosesForSelectedSubject.allSatisfy { $0.careRecipientID == first.id })
+
+        store.selectedSubjectID = second.id
+
+        XCTAssertEqual(store.medicationDosesForSelectedSubject.map(\.medicationName), ["Evening reminder"])
+    }
+
+    func testDemoMedicationDateSelectionStartsNewDayAsPending() async throws {
+        let store = AppStore.demo
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: today))
+        let morningID = try XCTUnwrap(store.medicationPlans.first?.id)
+
+        XCTAssertEqual(store.medicationDoses.first(where: { $0.planID == morningID })?.status, .scheduled)
+        store.selectedMedicationDate = tomorrow
+        await store.refreshMedicationReminders()
+
+        let tomorrowDoses = store.medicationDosesForSelectedSubject
+        XCTAssertFalse(tomorrowDoses.isEmpty)
+        XCTAssertTrue(tomorrowDoses.allSatisfy { $0.status == .scheduled })
+        XCTAssertTrue(tomorrowDoses.allSatisfy { calendar.isDate($0.scheduledAt, inSameDayAs: tomorrow) })
+
+        let tomorrowDose = try XCTUnwrap(tomorrowDoses.first)
+        let markedDone = await store.markMedicationDose(tomorrowDose, status: .acknowledged)
+        XCTAssertTrue(markedDone)
+        XCTAssertEqual(store.medicationDoses.first(where: { $0.id == tomorrowDose.id })?.status, .acknowledged)
+    }
+
+    func testUpdatingSelectedCareRecipientKeepsMedicationSubjectNameInSync() async throws {
+        let store = AppStore.demo
+        let recipient = try XCTUnwrap(store.careRecipients.first)
+
+        let updated = await store.updateCareRecipient(recipient, name: "Biel Oliver Mas", relationship: "Family", roomLabel: "Room 1")
+
+        XCTAssertTrue(updated)
+        XCTAssertEqual(store.selectedSubjectName, "Biel Oliver Mas")
+    }
+
+    func testDemoMedicationPlanEditArchiveAndDoneActionsPersist() async throws {
+        let store = AppStore.demo
+        let plan = try XCTUnwrap(store.medicationPlans.first)
+        let dose = try XCTUnwrap(store.medicationDoses.first(where: { $0.planID == plan.id }))
+
+        let updated = await store.updateMedicationPlan(
+            plan,
+            name: "Updated reminder",
+            dose: "2 tablets",
+            instructions: "After breakfast",
+            schedule: "Daily @ 09:00",
+            active: true,
+            assignedCaregiverID: nil
+        )
+
+        XCTAssertTrue(updated)
+        XCTAssertEqual(store.medicationPlans.first(where: { $0.id == plan.id })?.name, "Updated reminder")
+        XCTAssertEqual(store.medicationDoses.first(where: { $0.id == dose.id })?.medicationName, "Updated reminder")
+
+        let markedDone = await store.markMedicationDose(dose, status: .acknowledged)
+        XCTAssertTrue(markedDone)
+        XCTAssertEqual(store.medicationDoses.first(where: { $0.id == dose.id })?.status, .acknowledged)
+        XCTAssertNotNil(store.medicationDoses.first(where: { $0.id == dose.id })?.markedByName)
+        XCTAssertNotNil(store.medicationDoses.first(where: { $0.id == dose.id })?.markedAt)
+
+        let archived = await store.archiveMedicationPlan(plan)
+        XCTAssertTrue(archived)
+        XCTAssertFalse(store.medicationPlans.contains(where: { $0.id == plan.id }))
+        XCTAssertFalse(store.medicationDoses.contains(where: { $0.planID == plan.id }))
+    }
+
     func testRuntimeConfigurationDefaultsToLocalAPI() {
         let configuration = RuntimeConfiguration(info: [:])
         XCTAssertEqual(configuration.apiBaseURL.absoluteString, "http://127.0.0.1:8000/api/v1")
@@ -172,6 +247,58 @@ final class OneTests: XCTestCase {
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: startBody) as? [String: Any])
         XCTAssertEqual(payload["label"] as? String, "Living room camera")
         XCTAssertEqual(payload["expires_in_seconds"] as? Int, 600)
+    }
+
+    func testCameraManagementClientListsRoomsUpdatesAndDeletesWithExactContract() async throws {
+        let homeID = UUID()
+        let roomID = UUID()
+        let cameraID = UUID()
+        var requests: [URLRequest] = []
+
+        OneURLProtocolStub.handler = { request in
+            requests.append(request)
+            let body: Data
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/api/v1/homes/\(homeID.uuidString.lowercased())/rooms"):
+                body = Data("""
+                {"data":[{"id":"\(roomID.uuidString)","home_id":"\(homeID.uuidString)","name":"Kitchen","created_at":"2026-09-15T08:00:00Z"}]}
+                """.utf8)
+            case ("PATCH", "/api/v1/homes/\(homeID.uuidString.lowercased())/cameras/\(cameraID.uuidString.lowercased())"):
+                body = Data("""
+                {"id":"\(cameraID.uuidString)","name":"Kitchen camera","room_id":"\(roomID.uuidString)","resolution_width":null,"resolution_height":null,"metadata":{},"calibrations_invalidated":true}
+                """.utf8)
+            case ("DELETE", "/api/v1/homes/\(homeID.uuidString.lowercased())/cameras/\(cameraID.uuidString.lowercased())"):
+                body = Data("""
+                {"id":"\(cameraID.uuidString)","status":"deleted","revoked_sessions":1}
+                """.utf8)
+            default:
+                throw OneAPIError.invalidResponse
+            }
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "caregiver-token", homeID: homeID, session: URLSession(configuration: .oneTest))
+
+        let rooms = try await client.cameraRooms(homeID: homeID)
+        XCTAssertEqual(rooms, [CameraRoom(id: roomID, name: "Kitchen")])
+
+        try await client.updateCamera(
+            homeID: homeID,
+            cameraID: cameraID,
+            request: CameraUpdateRequest(name: "Kitchen camera", roomID: roomID)
+        )
+        try await client.deleteCamera(homeID: homeID, cameraID: cameraID)
+
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests.map(\.httpMethod), ["GET", "PATCH", "DELETE"])
+        XCTAssertTrue(requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer caregiver-token" })
+
+        let updateBody = try XCTUnwrap(requestBody(requests[1]))
+        let updatePayload = try XCTUnwrap(JSONSerialization.jsonObject(with: updateBody) as? [String: Any])
+        XCTAssertEqual(updatePayload["name"] as? String, "Kitchen camera")
+        XCTAssertEqual(updatePayload["room_id"] as? String, roomID.uuidString)
     }
 
     func testCareSpaceClientListsCreatesAndActivatesWithExactContract() async throws {
@@ -420,9 +547,11 @@ final class OneTests: XCTestCase {
 
     func testLiveConsentRouteUsesLowercaseUUIDsExpectedByBackend() async throws {
         let homeID = UUID()
-        var capturedURL: URL?
+        let subjectUserID = UUID()
+        let careRecipientID = UUID()
+        var capturedRequest: URLRequest?
         OneURLProtocolStub.handler = { request in
-            capturedURL = request.url
+            capturedRequest = request
             let response = try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil))
             return (response, Data("{}".utf8))
         }
@@ -430,10 +559,102 @@ final class OneTests: XCTestCase {
 
         let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
         let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
-        try await client.recordConsent(homeID: homeID, request: ConsentRequest(purpose: "video_capture", policyVersion: "2026-09", granted: true))
+        try await client.recordConsent(
+            homeID: homeID,
+            request: ConsentRequest(
+                purpose: "medication_management",
+                policyVersion: "2026-09",
+                granted: true,
+                careRecipientID: careRecipientID
+            )
+        )
 
-        XCTAssertEqual(capturedURL?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/consents")
-        XCTAssertFalse(capturedURL?.path.contains(homeID.uuidString) ?? true)
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertEqual(request.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/consents")
+        XCTAssertFalse(request.url?.path.contains(homeID.uuidString) ?? true)
+        let body = try XCTUnwrap(requestBody(request))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(payload["care_recipient_id"] as? String, careRecipientID.uuidString.lowercased())
+
+        let representedSubjectBody = try JSONEncoder.one.encode(
+            ConsentRequest(purpose: "family_mode", policyVersion: "2026-09", granted: true, subjectUserID: subjectUserID)
+        )
+        let representedSubjectPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: representedSubjectBody) as? [String: Any])
+        XCTAssertEqual(representedSubjectPayload["subject_user_id"] as? String, subjectUserID.uuidString.lowercased())
+    }
+
+    func testLiveConsentListAggregatesLatestGlobalAndCareRecipientChoices() async throws {
+        let homeID = UUID()
+        let userID = UUID()
+        let recipientID = UUID()
+        let oldConsentID = UUID()
+        let latestConsentID = UUID()
+        var capturedRequest: URLRequest?
+        OneURLProtocolStub.handler = { request in
+            capturedRequest = request
+            let body = Data("""
+            {"data":[
+              {"id":"\(oldConsentID.uuidString)","home_id":"\(homeID.uuidString)","subject_user_id":"\(userID.uuidString)","purpose":"video_capture","policy_version":"2026-09","granted_at":"2026-09-14T08:00:00Z","revoked_at":null,"care_recipient_id":null},
+              {"id":"\(latestConsentID.uuidString)","home_id":"\(homeID.uuidString)","subject_user_id":"\(userID.uuidString)","purpose":"video_capture","policy_version":"2026-09","granted_at":"2026-09-14T09:00:00Z","revoked_at":"2026-09-14T09:01:00Z","care_recipient_id":null},
+              {"id":"\(UUID().uuidString)","home_id":"\(homeID.uuidString)","subject_user_id":"\(userID.uuidString)","purpose":"medication_management","policy_version":"2026-09","granted_at":"2026-09-14T10:00:00Z","revoked_at":null,"care_recipient_id":"\(recipientID.uuidString)"}
+            ]}
+            """.utf8)
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        let records = try await client.consents(homeID: homeID)
+
+        XCTAssertEqual(capturedRequest?.httpMethod, "GET")
+        XCTAssertEqual(capturedRequest?.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/consents")
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.first(where: { $0.purpose == "video_capture" })?.id, latestConsentID)
+        XCTAssertEqual(records.first(where: { $0.purpose == "video_capture" })?.enabled, false)
+        XCTAssertEqual(records.first(where: { $0.purpose == "video_capture" })?.subjectUserID, userID)
+        XCTAssertEqual(records.first(where: { $0.purpose == "medication_management" })?.careRecipientID, recipientID)
+    }
+
+    func testLiveMedicationReminderQueryUsesPickerCalendarDay() async throws {
+        let homeID = UUID()
+        var capturedURL: URL?
+        OneURLProtocolStub.handler = { request in
+            capturedURL = request.url
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), Data("{\"data\":[]}".utf8))
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let selectedDate = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 9, day: 15)))
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        _ = try await client.medicationReminders(homeID: homeID, careRecipientID: nil, day: selectedDate)
+
+        let day = URLComponents(url: try XCTUnwrap(capturedURL), resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "day" })?.value
+        XCTAssertEqual(day, "2026-09-15")
+    }
+
+    func testPrivacyConsentChoicesRemainVisibleWhenLiveHomeHasNoSavedRows() {
+        let session = AuthSession(accessToken: "token", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3_600))
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let legacyGlobalMedicationConsent = ConsentRecord(id: UUID(), purpose: "medication_management", enabled: true, policyVersion: "2026-09", updatedAt: Date(), subjectUserID: session.userID)
+        let store = AppStore(events: [], scan: .empty, consents: [legacyGlobalMedicationConsent], apiClient: MockOneAPIClient(), backendState: .connected, session: session, runtimeConfiguration: configuration)
+
+        XCTAssertEqual(store.privacyConsents.map(\.purpose), ["Room and camera data", "Daily check-in support", "Family sharing"])
+        XCTAssertTrue(store.privacyConsents.allSatisfy { !$0.enabled })
+    }
+
+    func testMedicationReminderConsentIsScopedToCareRecipient() async throws {
+        let store = AppStore.demo
+        let person = try XCTUnwrap(store.careRecipients.first(where: { $0.medicationRemindersEnabled == false }))
+
+        XCTAssertFalse(store.privacyConsents.contains(where: { $0.purpose == "Medication reminders" }))
+        let enabled = await store.setMedicationRemindersEnabled(for: person, enabled: true)
+        XCTAssertTrue(enabled)
+        XCTAssertEqual(store.careRecipients.first(where: { $0.id == person.id })?.medicationRemindersEnabled, true)
+        XCTAssertFalse(store.privacyConsents.contains(where: { $0.purpose == "Medication reminders" }))
     }
 
     func testDemoFamilyMemberCanBeEditedAndRemovedLocally() async throws {

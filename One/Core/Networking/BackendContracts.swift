@@ -162,6 +162,23 @@ struct CameraPairingStatus: Codable, Sendable, Equatable {
         case device
     }
 }
+
+struct CameraUpdateRequest: Encodable, Sendable, Equatable {
+    let name: String
+    let roomID: UUID?
+
+    private enum CodingKeys: String, CodingKey {
+        case name, roomID
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        if let roomID { try container.encode(roomID, forKey: .roomID) }
+        else { try container.encodeNil(forKey: .roomID) }
+    }
+}
+
 struct FamilyInviteAcceptRequest: Codable, Sendable { let code: String; let displayName: String?; let email: String? }
 struct FamilyInviteRequest: Codable, Sendable { let displayName: String; let email: String?; let role: UserRole; let expiresInSeconds: Int }
 struct FamilyMemberUpdateRequest: Codable, Sendable, Equatable { let role: UserRole }
@@ -169,10 +186,34 @@ struct FamilyMemberMutationResult: Sendable, Equatable {
     let member: CaregiverAccount
     let invalidatedSessions: Int
 }
-struct ConsentRequest: Codable, Sendable { let purpose: String; let policyVersion: String; let granted: Bool }
+struct ConsentRequest: Encodable, Sendable {
+    let purpose: String
+    let policyVersion: String
+    let granted: Bool
+    var subjectUserID: UUID? = nil
+    var careRecipientID: UUID? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case purpose, policyVersion, granted, subjectUserID, careRecipientID
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(purpose, forKey: .purpose)
+        try container.encode(policyVersion, forKey: .policyVersion)
+        try container.encode(granted, forKey: .granted)
+        if let subjectUserID {
+            try container.encode(subjectUserID.uuidString.lowercased(), forKey: .subjectUserID)
+        }
+        if let careRecipientID {
+            try container.encode(careRecipientID.uuidString.lowercased(), forKey: .careRecipientID)
+        }
+    }
+}
 struct MedicationPlan: Codable, Identifiable, Sendable, Equatable {
     let id: UUID
     let subjectUserID: UUID
+    let careRecipientID: UUID?
     var name: String
     var dose: String
     var schedule: String
@@ -182,13 +223,28 @@ struct MedicationPlan: Codable, Identifiable, Sendable, Equatable {
     var assignedCaregiverID: UUID?
 }
 struct MedicationPlanRequest: Codable, Sendable {
-    let subjectUserID: UUID
+    let subjectUserID: UUID?
+    let careRecipientID: UUID?
     let name: String
     let dose: String
     let schedule: String
     let instructions: String
     let active: Bool
     let assignedCaregiverID: UUID?
+}
+struct MedicationCheckInRequest: Codable, Sendable {
+    let scheduledFor: Date
+    let status: String
+    var note: String = ""
+}
+struct FamilyAssistantRequest: Codable, Sendable {
+    let message: String
+    let careRecipientID: UUID?
+}
+struct FamilyAssistantResult: Codable, Sendable, Equatable {
+    let summary: String
+    let nextAction: String
+    let limitations: String
 }
 struct MedicationPlanUpdateRequest: Codable, Sendable {
     let name: String?
@@ -366,9 +422,12 @@ protocol OneAPIClient: Sendable {
     func events(homeID: UUID) async throws -> [ObservedEvent]
     func roomObjects(homeID: UUID) async throws -> [RoomObject]
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera]
+    func cameraRooms(homeID: UUID) async throws -> [CameraRoom]
     func cameraCount(homeID: UUID) async throws -> Int
     func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus
+    func updateCamera(homeID: UUID, cameraID: UUID, request: CameraUpdateRequest) async throws
+    func deleteCamera(homeID: UUID, cameraID: UUID) async throws
     func careRecipients(homeID: UUID) async throws -> [CareRecipient]
     func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient
     func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient
@@ -377,11 +436,14 @@ protocol OneAPIClient: Sendable {
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult
     func removeFamilyMember(homeID: UUID, userID: UUID) async throws -> FamilyMemberMutationResult
-    func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan]
+    func medicationPlans(homeID: UUID, careRecipientID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan]
     func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan
     func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan
-    func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose]
+    func medicationReminders(homeID: UUID, careRecipientID: UUID?, day: Date) async throws -> [MedicationDose]
+    func recordMedicationCheckIn(homeID: UUID, planID: UUID, request: MedicationCheckInRequest) async throws
+    func familyAssistant(homeID: UUID, request: FamilyAssistantRequest) async throws -> FamilyAssistantResult
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws
+    func consents(homeID: UUID) async throws -> [ConsentRecord]
     func logout() async throws
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse
@@ -519,9 +581,12 @@ struct MockOneAPIClient: OneAPIClient {
     func events(homeID: UUID) async throws -> [ObservedEvent] { [] }
     func roomObjects(homeID: UUID) async throws -> [RoomObject] { [] }
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera] { [] }
+    func cameraRooms(homeID: UUID) async throws -> [CameraRoom] { [] }
     func cameraCount(homeID: UUID) async throws -> Int { 0 }
     func startCameraPairing(homeID: UUID, label: String) async throws -> CameraPairingChallenge { CameraPairingChallenge(pairingID: UUID(), pairingCode: "482701", expiresInSeconds: 600) }
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus { CameraPairingStatus(pairingID: pairingID, status: "connected", expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)), connectedAt: ISO8601DateFormatter().string(from: Date()), device: .init(id: pairingID, label: "Demo camera", role: "publisher")) }
+    func updateCamera(homeID: UUID, cameraID: UUID, request: CameraUpdateRequest) async throws { }
+    func deleteCamera(homeID: UUID, cameraID: UUID) async throws { }
     func careRecipients(homeID: UUID) async throws -> [CareRecipient] { careRecipientState.all(homeID: homeID) }
     func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient { careRecipientState.create(homeID: homeID, request: request) }
     func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient {
@@ -540,11 +605,14 @@ struct MockOneAPIClient: OneAPIClient {
     func removeFamilyMember(homeID: UUID, userID: UUID) async throws -> FamilyMemberMutationResult {
         FamilyMemberMutationResult(member: CaregiverAccount(id: userID, name: "Household member", relationship: "Household member", role: .viewer, permissions: ["View today"], isCurrentUser: false), invalidatedSessions: 0)
     }
-    func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan] { [] }
-    func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan { MedicationPlan(id: UUID(), subjectUserID: request.subjectUserID, name: request.name, dose: request.dose, schedule: request.schedule, instructions: request.instructions, active: request.active, version: 1, assignedCaregiverID: request.assignedCaregiverID) }
-    func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan { MedicationPlan(id: planID, subjectUserID: UUID(), name: request.name ?? "Reminder", dose: request.dose ?? "", schedule: request.schedule ?? "", instructions: request.instructions ?? "", active: request.active ?? true, version: (request.version ?? 1) + 1, assignedCaregiverID: request.assignedCaregiverID) }
-    func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] { [] }
+    func medicationPlans(homeID: UUID, careRecipientID: UUID?, activeOnly: Bool) async throws -> [MedicationPlan] { [] }
+    func createMedicationPlan(homeID: UUID, request: MedicationPlanRequest) async throws -> MedicationPlan { MedicationPlan(id: UUID(), subjectUserID: request.subjectUserID ?? UUID(), careRecipientID: request.careRecipientID, name: request.name, dose: request.dose, schedule: request.schedule, instructions: request.instructions, active: request.active, version: 1, assignedCaregiverID: request.assignedCaregiverID) }
+    func updateMedicationPlan(homeID: UUID, planID: UUID, request: MedicationPlanUpdateRequest) async throws -> MedicationPlan { MedicationPlan(id: planID, subjectUserID: UUID(), careRecipientID: nil, name: request.name ?? "Reminder", dose: request.dose ?? "", schedule: request.schedule ?? "", instructions: request.instructions ?? "", active: request.active ?? true, version: (request.version ?? 1) + 1, assignedCaregiverID: request.assignedCaregiverID) }
+    func medicationReminders(homeID: UUID, careRecipientID: UUID?, day: Date) async throws -> [MedicationDose] { [] }
+    func recordMedicationCheckIn(homeID: UUID, planID: UUID, request: MedicationCheckInRequest) async throws { }
+    func familyAssistant(homeID: UUID, request: FamilyAssistantRequest) async throws -> FamilyAssistantResult { FamilyAssistantResult(summary: "No live assistant data in demo mode.", nextAction: "Review today's plan.", limitations: "Demo response") }
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws { }
+    func consents(homeID: UUID) async throws -> [ConsentRecord] { [] }
     func logout() async throws { }
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID()) }
@@ -665,6 +733,11 @@ struct HTTPOneAPIClient: OneAPIClient {
         return response.data.compactMap(\.camera)
     }
 
+    func cameraRooms(homeID: UUID) async throws -> [CameraRoom] {
+        let response: BackendRoomsResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/rooms", method: "GET", body: nil, requiresSession: true)
+        return response.data
+    }
+
     func cameraCount(homeID: UUID) async throws -> Int {
         try await pairedCameras(homeID: homeID).count
     }
@@ -676,6 +749,15 @@ struct HTTPOneAPIClient: OneAPIClient {
 
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus {
         try await send(path: "/homes/\(homeID.oneAPIPath)/pairing/\(pairingID.oneAPIPath)/status", method: "GET", body: nil, requiresSession: true)
+    }
+
+    func updateCamera(homeID: UUID, cameraID: UUID, request: CameraUpdateRequest) async throws {
+        let body = try JSONEncoder.one.encode(request)
+        let _: CameraMutationResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)", method: "PATCH", body: body, requiresSession: true)
+    }
+
+    func deleteCamera(homeID: UUID, cameraID: UUID) async throws {
+        let _: CameraDeleteResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)", method: "DELETE", body: nil, requiresSession: true)
     }
 
     func careRecipients(homeID: UUID) async throws -> [CareRecipient] {
@@ -723,10 +805,10 @@ struct HTTPOneAPIClient: OneAPIClient {
         return FamilyMemberMutationResult(member: member, invalidatedSessions: response.invalidatedSessions)
     }
 
-    func medicationPlans(homeID: UUID, subjectUserID: UUID?, activeOnly: Bool = true) async throws -> [MedicationPlan] {
+    func medicationPlans(homeID: UUID, careRecipientID: UUID?, activeOnly: Bool = true) async throws -> [MedicationPlan] {
         var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/medication-plans"), resolvingAgainstBaseURL: false)!
         var query = [URLQueryItem(name: "active_only", value: activeOnly ? "true" : "false")]
-        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.oneAPIPath)) }
+        if let careRecipientID { query.append(URLQueryItem(name: "care_recipient_id", value: careRecipientID.oneAPIPath)) }
         components.queryItems = query
         let response: BackendMedicationPlansResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.plan }
@@ -746,19 +828,58 @@ struct HTTPOneAPIClient: OneAPIClient {
         return plan
     }
 
-    func medicationReminders(homeID: UUID, subjectUserID: UUID?, day: Date) async throws -> [MedicationDose] {
+    func medicationReminders(homeID: UUID, careRecipientID: UUID?, day: Date) async throws -> [MedicationDose] {
         var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/medication-reminders"), resolvingAgainstBaseURL: false)!
-        let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.dateFormat = "yyyy-MM-dd"; formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        // The picker represents a local calendar day. Format its components
+        // in the user's calendar so midnight does not become the previous UTC
+        // day before it reaches the API.
+        let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"; formatter.timeZone = .current
         var query = [URLQueryItem(name: "day", value: formatter.string(from: day))]
-        if let subjectUserID { query.append(URLQueryItem(name: "subject_user_id", value: subjectUserID.oneAPIPath)) }
+        if let careRecipientID { query.append(URLQueryItem(name: "care_recipient_id", value: careRecipientID.oneAPIPath)) }
         components.queryItems = query
         let response: BackendMedicationRemindersResponse = try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap { $0.dose }
     }
 
+    func recordMedicationCheckIn(homeID: UUID, planID: UUID, request: MedicationCheckInRequest) async throws {
+        let body = try JSONEncoder.one.encode(request)
+        let _: BackendMedicationCheckInResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/medication-plans/\(planID.oneAPIPath)/check-ins", method: "POST", body: body, requiresSession: true)
+    }
+
+    func familyAssistant(homeID: UUID, request: FamilyAssistantRequest) async throws -> FamilyAssistantResult {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendFamilyAssistantResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/family-assistant", method: "POST", body: body, requiresSession: true)
+        return response.data
+    }
+
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws {
         let body = try JSONEncoder.one.encode(request)
         let _: BackendConsentResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/consents", method: "POST", body: body, requiresSession: true)
+    }
+
+    func consents(homeID: UUID) async throws -> [ConsentRecord] {
+        let response: BackendConsentsResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/consents", method: "GET", body: nil, requiresSession: true)
+        var latestByScope: [String: BackendConsentRecord] = [:]
+        for record in response.data.sorted(by: { $0.grantedAt > $1.grantedAt }) {
+            let scope = "\(record.subjectUserId)|\(record.careRecipientId ?? "")|\(record.purpose)"
+            if latestByScope[scope] == nil {
+                latestByScope[scope] = record
+            }
+        }
+        return latestByScope.values.compactMap { record in
+            guard let id = UUID(uuidString: record.id),
+                  let subjectUserID = UUID(uuidString: record.subjectUserId) else { return nil }
+            return ConsentRecord(
+                id: id,
+                purpose: record.purpose,
+                enabled: record.revokedAt == nil,
+                policyVersion: record.policyVersion,
+                updatedAt: record.grantedAt,
+                subjectUserID: subjectUserID,
+                careRecipientID: record.careRecipientId.flatMap(UUID.init(uuidString:))
+            )
+        }
+        .sorted { $0.updatedAt > $1.updatedAt }
     }
 
     func logout() async throws { try await sendEmpty(path: "/sessions/current", method: "DELETE") }
@@ -945,6 +1066,16 @@ private struct BackendCareRecipientsResponse: Decodable { let data: [CareRecipie
 private struct BackendCareRecipientMutationResponse: Decodable { let data: CareRecipient }
 private struct BackendActor: Decodable { let role: String }
 private struct BackendConsentResponse: Decodable { let id: String? }
+private struct BackendConsentsResponse: Decodable { let data: [BackendConsentRecord] }
+private struct BackendConsentRecord: Decodable {
+    let id: String
+    let subjectUserId: String
+    let purpose: String
+    let policyVersion: String
+    let grantedAt: Date
+    let revokedAt: Date?
+    let careRecipientId: String?
+}
 private struct BackendIDResponse: Decodable { let id: String }
 private struct BackendMapUploadResponse: Decodable { let id: String; let revision: Int? }
 private struct BackendUSDZUploadResponse: Decodable { let mapId: String; let source: String; let dimension: String; let usdz: USDZAsset? }
@@ -1016,6 +1147,7 @@ private struct BackendObject: Decodable {
 }
 private struct BackendPoint: Decodable { let x: Double?; let y: Double?; let z: Double? }
 private struct BackendCamerasResponse: Decodable { let data: [BackendCamera] }
+private struct BackendRoomsResponse: Decodable { let data: [CameraRoom] }
 private struct BackendCamera: Decodable {
     let id: String
     let name: String
@@ -1027,6 +1159,8 @@ private struct BackendCamera: Decodable {
         return PairedCamera(id: id, name: name, roomID: roomID.flatMap(UUID.init(uuidString:)), status: status)
     }
 }
+private struct CameraMutationResponse: Decodable { let id: UUID }
+private struct CameraDeleteResponse: Decodable { let id: UUID; let status: String }
 private struct BackendFamilyMembersResponse: Decodable { let data: [BackendFamilyMember] }
 private struct BackendFamilyMemberMutationResponse: Decodable { let data: BackendFamilyMember; let invalidatedSessions: Int }
 private struct BackendFamilyMember: Decodable {
@@ -1039,9 +1173,13 @@ private struct BackendFamilyMember: Decodable {
 }
 private struct BackendMedicationRemindersResponse: Decodable { let data: [BackendMedicationReminder] }
 private struct BackendMedicationPlansResponse: Decodable { let data: [BackendMedicationPlan] }
+private struct BackendMedicationCheckInResponse: Decodable { let data: BackendMedicationCheckIn }
+private struct BackendMedicationCheckIn: Decodable { let status: String; let markedByName: String?; let updatedAt: Date }
+private struct BackendFamilyAssistantResponse: Decodable { let data: FamilyAssistantResult }
 private struct BackendMedicationPlan: Decodable {
     let id: String
     let subjectUserID: String
+    let careRecipientID: String?
     let name: String
     let dose: String
     let schedule: String
@@ -1050,17 +1188,42 @@ private struct BackendMedicationPlan: Decodable {
     let version: Int
     let assignedCaregiverID: String?
 
+    private enum CodingKeys: String, CodingKey {
+        // JSONDecoder.one converts snake-case keys before matching custom
+        // keys, so the post-conversion spelling keeps the ID suffix intact.
+        case id
+        case subjectUserID = "subjectUserId"
+        case careRecipientID = "careRecipientId"
+        case name, dose, schedule, instructions, active, version
+        case assignedCaregiverID = "assignedCaregiverId"
+    }
+
     var plan: MedicationPlan? {
         guard let id = UUID(uuidString: id), let subjectUserID = UUID(uuidString: subjectUserID) else { return nil }
-        return MedicationPlan(id: id, subjectUserID: subjectUserID, name: name, dose: dose, schedule: schedule, instructions: instructions, active: active, version: version, assignedCaregiverID: assignedCaregiverID.flatMap(UUID.init(uuidString:)))
+        return MedicationPlan(id: id, subjectUserID: subjectUserID, careRecipientID: careRecipientID.flatMap(UUID.init(uuidString:)), name: name, dose: dose, schedule: schedule, instructions: instructions, active: active, version: version, assignedCaregiverID: assignedCaregiverID.flatMap(UUID.init(uuidString:)))
     }
 }
 private struct BackendMedicationReminder: Decodable {
-    let planID: String; let name: String; let medicationDose: String; let instructions: String; let scheduleRule: String; let scheduledFor: Date; let status: String; let assignedCaregiverName: String?
+    let planID: String; let careRecipientID: String?; let name: String; let medicationDose: String; let instructions: String; let scheduleRule: String; let scheduledFor: Date; let status: String; let assignedCaregiverName: String?; let markedByName: String?; let updatedAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case planID = "planId"
+        case careRecipientID = "careRecipientId"
+        case name
+        case medicationDose = "dose"
+        case instructions
+        case scheduleRule = "scheduleRule"
+        case scheduledFor
+        case status
+        case assignedCaregiverName
+        case markedByName
+        case updatedAt
+    }
+
     var dose: MedicationDose? {
         guard let planID = UUID(uuidString: planID) else { return nil }
         let status = status == "taken" ? MedicationDoseStatus.acknowledged : status == "missed" ? .missed : status == "skipped" ? .needsConfirmation : .scheduled
-        return MedicationDose(id: UUID(), medicationName: "\(name) · \(medicationDose)", instructions: instructions, scheduledAt: scheduledFor, status: status, assignedCaregiverName: assignedCaregiverName, scheduleRule: scheduleRule, planID: planID)
+        return MedicationDose(id: UUID(), medicationName: "\(name) · \(medicationDose)", instructions: instructions, scheduledAt: scheduledFor, status: status, assignedCaregiverName: assignedCaregiverName, scheduleRule: scheduleRule, careRecipientID: careRecipientID.flatMap(UUID.init(uuidString:)), planID: planID, markedByName: markedByName, markedAt: updatedAt)
     }
 }
 

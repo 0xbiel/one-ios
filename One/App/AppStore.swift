@@ -10,14 +10,17 @@ final class AppStore {
     private static let onboardingConsentMapping: [(label: String, purpose: String)] = [
         ("Room and camera data", "video_capture"),
         ("Daily check-in support", "audio_capture"),
-        ("Family sharing", "family_mode"),
-        ("Medication reminders", "medication_management")
+        ("Family sharing", "family_mode")
     ]
     private static let onboardingConsentDefaults = [
         "Daily check-in support": false,
         "Room and camera data": false,
-        "Medication reminders": false,
         "Family sharing": false
+    ]
+    private static let privacyConsentFallbackIDs: [String: UUID] = [
+        "video_capture": UUID(uuidString: "9a8f7c6b-5d4e-4f3a-8b2c-1d0e9f8a7b6c")!,
+        "audio_capture": UUID(uuidString: "8b7a6c5d-4e3f-4a2b-9c1d-0e8f7a6b5c4d")!,
+        "family_mode": UUID(uuidString: "7c6b5a4e-3f2d-4b1a-8e0f-9a7b6c5d4e3f")!
     ]
     var role: UserRole = .caregiver
     var selectedTab = "overview"
@@ -25,6 +28,9 @@ final class AppStore {
     var scan: RoomScan
     var assistantMessages: [AssistantMessage] = [
         AssistantMessage(isUser: false, text: "Hi, I’m here for a calm daily check-in. Press and hold when you’d like to talk.")
+    ]
+    var familyAssistantMessages: [AssistantMessage] = [
+        AssistantMessage(isUser: false, text: "I can summarize medication plans and check-ins for the person you select. I do not make care or medication decisions.")
     ]
     var isListening = false
     var consents: [ConsentRecord]
@@ -43,6 +49,9 @@ final class AppStore {
     var apiClient: any OneAPIClient
     var session: AuthSession?
     var authError: String?
+    var isConsentsLoading = false
+    var isConsentMutating = false
+    var consentError: String?
     var emailChallenge: EmailAuthChallenge?
     var onboardingStep = 0
     var onboardingConsents = AppStore.onboardingConsentDefaults
@@ -62,11 +71,14 @@ final class AppStore {
     var isCareRecipientMutating = false
     var careRecipientError: String?
     var pairedCameras: [PairedCamera] = []
+    var cameraRooms: [CameraRoom] = []
     var cameraCount = 0
     var cameraPairingChallenge: CameraPairingChallenge?
     var cameraPairingStatus: CameraPairingStatus?
     var isCameraPairingBusy = false
+    var isCameraMutating = false
     var cameraPairingError: String?
+    private var pendingCameraRoomID: UUID?
     private var pendingRoomPlanMapID: UUID?
     private var pendingRoomPlanUSDZData: Data?
     private var roomPlanModelMapID: UUID?
@@ -79,8 +91,74 @@ final class AppStore {
         self.careRecipients = careRecipients
     }
 
-    var medicationSubjects: [CaregiverAccount] {
-        caregivers.filter { !$0.isCurrentUser && $0.role == .viewer }
+    var medicationSubjects: [CareRecipient] { careRecipients }
+    var medicationDosesForSelectedSubject: [MedicationDose] {
+        let subjectDoses: [MedicationDose]
+        if let selectedSubjectID {
+            let matching = medicationDoses.filter { $0.careRecipientID == selectedSubjectID }
+
+            // Keep older demo/test fixtures useful when they predate recipient IDs.
+            subjectDoses = matching.isEmpty && medicationDoses.allSatisfy({ $0.careRecipientID == nil })
+                ? medicationDoses
+                : matching
+        } else {
+            subjectDoses = medicationDoses
+        }
+
+        // The live API already returns reminders for the requested day. Demo
+        // data is kept locally, so it needs the same day boundary here.
+        guard runtimeConfiguration.isDemoMode else { return subjectDoses }
+        return subjectDoses.filter { Calendar.current.isDate($0.scheduledAt, inSameDayAs: selectedMedicationDate) }
+    }
+    var medicationPlansForSelectedSubject: [MedicationPlan] {
+        guard let selectedSubjectID else { return medicationPlans.filter(\.active) }
+        let matching = medicationPlans.filter { $0.active && $0.careRecipientID == selectedSubjectID }
+
+        // Keep older fixtures useful when they predate recipient IDs.
+        if matching.isEmpty && medicationPlans.allSatisfy({ $0.careRecipientID == nil }) {
+            return medicationPlans.filter(\.active)
+        }
+        return matching
+    }
+    var currentUserName: String? { caregivers.first(where: \.isCurrentUser)?.name }
+
+    var privacyConsents: [ConsentRecord] {
+        let currentUserID = session?.userID
+        let relevant = consents.filter { consent in
+            consent.careRecipientID == nil
+                && consent.purpose != "medication_management"
+                && consent.purpose != "Medication reminders"
+                && (consent.subjectUserID == nil || consent.subjectUserID == currentUserID)
+        }
+
+        let known = Self.onboardingConsentMapping.map { mapping in
+            let existing = relevant
+                .filter { $0.purpose == mapping.label || $0.purpose == mapping.purpose }
+                .max { $0.updatedAt < $1.updatedAt }
+            return existing.map {
+                ConsentRecord(
+                    id: $0.id,
+                    purpose: mapping.label,
+                    enabled: $0.enabled,
+                    policyVersion: $0.policyVersion,
+                    updatedAt: $0.updatedAt,
+                    subjectUserID: $0.subjectUserID,
+                    careRecipientID: nil
+                )
+            } ?? ConsentRecord(
+                id: Self.privacyConsentFallbackIDs[mapping.purpose]!,
+                purpose: mapping.label,
+                enabled: false,
+                policyVersion: "2026-09",
+                updatedAt: .distantPast,
+                subjectUserID: currentUserID,
+                careRecipientID: nil
+            )
+        }
+
+        let knownPurposes = Set(Self.onboardingConsentMapping.flatMap { [$0.label, $0.purpose] })
+        let additional = relevant.filter { !knownPurposes.contains($0.purpose) }
+        return known + additional
     }
 
     var canManageCareRecipients: Bool { role != .resident }
@@ -89,10 +167,14 @@ final class AppStore {
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-one-show-family")
             || ProcessInfo.processInfo.arguments.contains("-one-show-care-spaces")
-            || ProcessInfo.processInfo.arguments.contains("-one-show-care-space-create") {
+            || ProcessInfo.processInfo.arguments.contains("-one-show-care-space-create")
+            || ProcessInfo.processInfo.arguments.contains("-one-show-settings") {
             let store = AppStore.demo
             if ProcessInfo.processInfo.arguments.contains("-one-show-family") {
                 store.selectedTab = "family"
+            }
+            if ProcessInfo.processInfo.arguments.contains("-one-show-settings") {
+                store.selectedTab = "settings"
             }
             return store
         }
@@ -148,9 +230,9 @@ final class AppStore {
             ObservedEvent(id: UUID(), kind: .assistant, timestamp: now.addingTimeInterval(-86400 * 2), location: "Home", confidence: .high, explanation: "The resident used push-to-talk to ask for the day’s reminder.", reviewed: true, hasClip: false)
         ]
         let consents = [
-            ConsentRecord(id: UUID(), purpose: "Room scan and map", enabled: true, policyVersion: "2026-09", updatedAt: now),
-            ConsentRecord(id: UUID(), purpose: "Microphone for push-to-talk", enabled: true, policyVersion: "2026-09", updatedAt: now),
-            ConsentRecord(id: UUID(), purpose: "Caregiver event clips", enabled: false, policyVersion: "2026-09", updatedAt: now)
+            ConsentRecord(id: UUID(), purpose: "Room and camera data", enabled: true, policyVersion: "2026-09", updatedAt: now),
+            ConsentRecord(id: UUID(), purpose: "Daily check-in support", enabled: true, policyVersion: "2026-09", updatedAt: now),
+            ConsentRecord(id: UUID(), purpose: "Family sharing", enabled: false, policyVersion: "2026-09", updatedAt: now)
         ]
         let caregivers = [
             CaregiverAccount(id: UUID(), name: "Biel Martínez", relationship: "You", role: .owner, permissions: ["Manage people", "Manage plans", "Review events"], isCurrentUser: true),
@@ -159,24 +241,102 @@ final class AppStore {
             CaregiverAccount(id: UUID(), name: "Clara Martínez", relationship: "Family member", role: .viewer, permissions: ["View today"], isCurrentUser: false)
         ]
         let careRecipients = [
-            CareRecipient(id: UUID(), displayName: "María", relationship: "Mother"),
-            CareRecipient(id: UUID(), displayName: "José", relationship: "Father")
+            CareRecipient(id: UUID(), displayName: "María", relationship: "Mother", medicationRemindersEnabled: true),
+            CareRecipient(id: UUID(), displayName: "José", relationship: "Father", medicationRemindersEnabled: false)
         ]
         let calendar = Calendar.current
         let morning = calendar.date(bySettingHour: 8, minute: 30, second: 0, of: now) ?? now
         let midday = calendar.date(bySettingHour: 13, minute: 0, second: 0, of: now) ?? now
         let evening = calendar.date(bySettingHour: 20, minute: 0, second: 0, of: now) ?? now
-        let medicationDoses = [
-            MedicationDose(id: UUID(), medicationName: "Morning reminder", instructions: "With breakfast", scheduledAt: morning, status: .acknowledged, assignedCaregiverName: "Marta Martínez"),
-            MedicationDose(id: UUID(), medicationName: "Midday reminder", instructions: "After lunch", scheduledAt: midday, status: .needsConfirmation, assignedCaregiverName: "Joan Soler"),
-            MedicationDose(id: UUID(), medicationName: "Evening reminder", instructions: "With dinner", scheduledAt: evening, status: .scheduled, assignedCaregiverName: nil)
+        let morningPlanID = UUID()
+        let middayPlanID = UUID()
+        let eveningPlanID = UUID()
+        let medicationPlans = [
+            MedicationPlan(id: morningPlanID, subjectUserID: caregivers[0].id, careRecipientID: careRecipients[0].id, name: "Morning reminder", dose: "1 tablet", schedule: "Daily @ 08:30", instructions: "With breakfast", active: true, version: 1, assignedCaregiverID: caregivers[1].id),
+            MedicationPlan(id: middayPlanID, subjectUserID: caregivers[0].id, careRecipientID: careRecipients[0].id, name: "Midday reminder", dose: "1 tablet", schedule: "Daily @ 13:00", instructions: "After lunch", active: true, version: 1, assignedCaregiverID: caregivers[2].id),
+            MedicationPlan(id: eveningPlanID, subjectUserID: caregivers[0].id, careRecipientID: careRecipients[1].id, name: "Evening reminder", dose: "1 tablet", schedule: "Daily @ 20:00", instructions: "With dinner", active: true, version: 1, assignedCaregiverID: nil)
         ]
-        return AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, careRecipients: careRecipients, medicationDoses: medicationDoses, careSpaces: CareSpaceSummary.demoSpaces, runtimeConfiguration: RuntimeConfiguration(info: [:]))
+        let medicationDoses = [
+            MedicationDose(id: UUID(), medicationName: "Morning reminder", instructions: "With breakfast", scheduledAt: morning, status: .scheduled, assignedCaregiverName: "Marta Martínez", careRecipientID: careRecipients[0].id, planID: morningPlanID),
+            MedicationDose(id: UUID(), medicationName: "Midday reminder", instructions: "After lunch", scheduledAt: midday, status: .needsConfirmation, assignedCaregiverName: "Joan Soler", careRecipientID: careRecipients[0].id, planID: middayPlanID),
+            MedicationDose(id: UUID(), medicationName: "Evening reminder", instructions: "With dinner", scheduledAt: evening, status: .scheduled, assignedCaregiverName: nil, careRecipientID: careRecipients[1].id, planID: eveningPlanID)
+        ]
+        let store = AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, careRecipients: careRecipients, medicationDoses: medicationDoses, medicationPlans: medicationPlans, careSpaces: CareSpaceSummary.demoSpaces, runtimeConfiguration: RuntimeConfiguration(info: [:]))
+        store.selectedSubjectID = careRecipients[0].id
+        store.selectedSubjectName = careRecipients[0].displayName
+        store.cameraRooms = scan.zones.map { CameraRoom(id: $0.id, name: $0.name) }
+        store.pairedCameras = [PairedCamera(id: UUID(), name: "Living room camera", roomID: lounge.id, status: "online")]
+        store.cameraCount = store.pairedCameras.count
+        return store
     }
 
     func toggleConsent(_ consent: ConsentRecord) {
         guard let index = consents.firstIndex(where: { $0.id == consent.id }) else { return }
         consents[index].enabled.toggle()
+    }
+
+    @discardableResult
+    func refreshConsents() async -> Bool {
+        guard !runtimeConfiguration.isDemoMode, let session else { return true }
+        isConsentsLoading = true
+        defer { isConsentsLoading = false }
+        do {
+            consents = try await apiClient.consents(homeID: session.homeID)
+            consentError = nil
+            return true
+        } catch {
+            consentError = (error as? LocalizedError)?.errorDescription ?? "Could not load privacy and consent settings."
+            return false
+        }
+    }
+
+    @discardableResult
+    func setConsent(_ consent: ConsentRecord, enabled: Bool) async -> Bool {
+        guard let mapping = Self.onboardingConsentMapping.first(where: { $0.label == consent.purpose || $0.purpose == consent.purpose }) else {
+            consentError = "That consent choice is not available."
+            return false
+        }
+
+        let previousConsents = consents
+        onboardingConsents[mapping.label] = enabled
+        upsertOnboardingConsent(label: mapping.label, granted: enabled)
+
+        if runtimeConfiguration.isDemoMode {
+            consentError = nil
+            return true
+        }
+
+        guard let session else {
+            consents = previousConsents
+            onboardingConsents[mapping.label] = consent.enabled
+            consentError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+
+        isConsentMutating = true
+        consentError = nil
+        defer { isConsentMutating = false }
+        do {
+            try await apiClient.recordConsent(
+                homeID: session.homeID,
+                request: ConsentRequest(
+                    purpose: mapping.purpose,
+                    policyVersion: "2026-09",
+                    granted: enabled,
+                    subjectUserID: session.userID
+                )
+            )
+            _ = await refreshConsents()
+            authError = nil
+            return true
+        } catch {
+            consents = previousConsents
+            onboardingConsents[mapping.label] = consent.enabled
+            let message = (error as? LocalizedError)?.errorDescription ?? "Could not save this consent choice."
+            consentError = message
+            authError = message
+            return false
+        }
     }
 
     func sendAssistantMessage() {
@@ -193,42 +353,155 @@ final class AppStore {
         medicationDoses[index].status = status
     }
 
+    @discardableResult
+    func markMedicationDose(_ dose: MedicationDose, status: MedicationDoseStatus) async -> Bool {
+        if runtimeConfiguration.isDemoMode {
+            updateMedicationDose(dose.id, status: status)
+            if let index = medicationDoses.firstIndex(where: { $0.id == dose.id }), status != .scheduled {
+                medicationDoses[index].markedByName = currentUserName ?? "You"
+                medicationDoses[index].markedAt = Date()
+            }
+            return true
+        }
+        guard let session, let planID = dose.planID else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        let backendStatus: String
+        switch status {
+        case .acknowledged: backendStatus = "taken"
+        case .missed: backendStatus = "missed"
+        case .needsConfirmation: backendStatus = "skipped"
+        case .scheduled: backendStatus = "pending"
+        }
+        isMedicationMutating = true
+        defer { isMedicationMutating = false }
+        do {
+            try await apiClient.recordMedicationCheckIn(homeID: session.homeID, planID: planID, request: MedicationCheckInRequest(scheduledFor: dose.scheduledAt, status: backendStatus))
+            await refreshMedicationReminders()
+            return true
+        } catch {
+            authError = medicationErrorMessage(error, careRecipientID: dose.careRecipientID, fallback: "Could not update this reminder.")
+            return false
+        }
+    }
+
     func addReminder() {
-        medicationDoses.append(MedicationDose(id: UUID(), medicationName: "New reminder", instructions: "Add instructions", scheduledAt: Date().addingTimeInterval(3600), status: .scheduled, assignedCaregiverName: nil))
+        medicationDoses.append(MedicationDose(id: UUID(), medicationName: "New reminder", instructions: "Add instructions", scheduledAt: Date().addingTimeInterval(3600), status: .scheduled, assignedCaregiverName: nil, careRecipientID: selectedSubjectID))
     }
 
     func refreshMedicationPlans() async {
         guard !runtimeConfiguration.isDemoMode, let session else { return }
+        guard let selectedSubjectID else {
+            medicationPlans = []
+            return
+        }
+        if let recipient = careRecipients.first(where: { $0.id == selectedSubjectID }), recipient.medicationRemindersEnabled == false {
+            medicationPlans = []
+            medicationDoses = []
+            return
+        }
         isMedicationLoading = true
         defer { isMedicationLoading = false }
         do {
-            medicationPlans = try await apiClient.medicationPlans(homeID: session.homeID, subjectUserID: selectedSubjectID, activeOnly: true)
+            medicationPlans = try await apiClient.medicationPlans(homeID: session.homeID, careRecipientID: selectedSubjectID, activeOnly: true)
         } catch {
-            authError = (error as? LocalizedError)?.errorDescription ?? "Could not load medication plans."
+            authError = medicationErrorMessage(error, careRecipientID: selectedSubjectID, fallback: "Could not load medication plans.")
         }
     }
 
-    func createMedicationPlan(name: String, dose: String, instructions: String, schedule: String, assignedCaregiverID: UUID?, subjectUserID: UUID?) async -> Bool {
-        guard !runtimeConfiguration.isDemoMode, let session else {
-            addReminder()
+    func createMedicationPlan(name: String, dose: String, instructions: String, schedule: String, assignedCaregiverID: UUID?, careRecipientID: UUID?) async -> Bool {
+        if runtimeConfiguration.isDemoMode {
+            guard let recipientID = careRecipientID ?? selectedSubjectID else {
+                authError = "Choose who this medication plan is for."
+                return false
+            }
+            let planID = UUID()
+            let plan = MedicationPlan(
+                id: planID,
+                subjectUserID: session?.userID ?? caregivers.first?.id ?? UUID(),
+                careRecipientID: recipientID,
+                name: name,
+                dose: dose,
+                schedule: schedule,
+                instructions: instructions,
+                active: true,
+                version: 1,
+                assignedCaregiverID: assignedCaregiverID
+            )
+            medicationPlans.append(plan)
+            medicationDoses.append(MedicationDose(
+                id: UUID(),
+                medicationName: name,
+                instructions: instructions,
+                scheduledAt: Date().addingTimeInterval(3600),
+                status: .scheduled,
+                assignedCaregiverName: assignedCaregiverID.flatMap { id in caregivers.first(where: { $0.id == id })?.name },
+                careRecipientID: recipientID,
+                planID: planID
+            ))
+            selectedSubjectID = recipientID
+            selectedSubjectName = careRecipients.first(where: { $0.id == recipientID })?.displayName ?? selectedSubjectName
             return true
         }
-        let subjectID = subjectUserID ?? selectedSubjectID ?? session.userID
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        guard let recipientID = careRecipientID ?? selectedSubjectID else {
+            authError = "Choose who this medication plan is for."
+            return false
+        }
+        if let recipient = careRecipients.first(where: { $0.id == recipientID }), recipient.medicationRemindersEnabled == false {
+            authError = "Medication reminders are off for \(recipient.displayName). Open their profile and turn on Medication reminders first."
+            return false
+        }
         isMedicationMutating = true
         defer { isMedicationMutating = false }
         do {
-            let plan = try await apiClient.createMedicationPlan(homeID: session.homeID, request: MedicationPlanRequest(subjectUserID: subjectID, name: name, dose: dose, schedule: schedule, instructions: instructions, active: true, assignedCaregiverID: assignedCaregiverID))
+            let plan = try await apiClient.createMedicationPlan(homeID: session.homeID, request: MedicationPlanRequest(subjectUserID: nil, careRecipientID: recipientID, name: name, dose: dose, schedule: schedule, instructions: instructions, active: true, assignedCaregiverID: assignedCaregiverID))
             medicationPlans.append(plan)
             await refreshMedicationReminders()
             return true
         } catch {
-            authError = (error as? LocalizedError)?.errorDescription ?? "Could not save the medication plan."
+            authError = medicationErrorMessage(error, careRecipientID: recipientID, fallback: "Could not save the medication plan.")
             return false
         }
     }
 
     func updateMedicationPlan(_ plan: MedicationPlan, name: String, dose: String, instructions: String, schedule: String, active: Bool, assignedCaregiverID: UUID?) async -> Bool {
-        guard !runtimeConfiguration.isDemoMode, let session else { return false }
+        if runtimeConfiguration.isDemoMode {
+            guard let index = medicationPlans.firstIndex(where: { $0.id == plan.id }) else {
+                authError = "This medication plan is no longer available."
+                return false
+            }
+            medicationPlans[index].name = name
+            medicationPlans[index].dose = dose
+            medicationPlans[index].instructions = instructions
+            medicationPlans[index].schedule = schedule
+            medicationPlans[index].active = active
+            medicationPlans[index].version += 1
+            medicationPlans[index].assignedCaregiverID = assignedCaregiverID
+            for doseIndex in medicationDoses.indices where medicationDoses[doseIndex].planID == plan.id {
+                medicationDoses[doseIndex].medicationName = name
+                medicationDoses[doseIndex].instructions = instructions
+                medicationDoses[doseIndex].assignedCaregiverName = assignedCaregiverID.flatMap { id in caregivers.first(where: { $0.id == id })?.name }
+            }
+            if !active {
+                medicationDoses.removeAll { $0.planID == plan.id }
+            }
+            return true
+        }
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        if let recipientID = plan.careRecipientID,
+           let recipient = careRecipients.first(where: { $0.id == recipientID }),
+           recipient.medicationRemindersEnabled == false {
+            authError = "Medication reminders are off for \(recipient.displayName). Open their profile and turn on Medication reminders first."
+            return false
+        }
         isMedicationMutating = true
         defer { isMedicationMutating = false }
         do {
@@ -237,13 +510,21 @@ final class AppStore {
             await refreshMedicationReminders()
             return true
         } catch {
-            authError = (error as? LocalizedError)?.errorDescription ?? "Could not update the medication plan."
+            authError = medicationErrorMessage(error, careRecipientID: plan.careRecipientID, fallback: "Could not update the medication plan.")
             return false
         }
     }
 
     func archiveMedicationPlan(_ plan: MedicationPlan) async -> Bool {
-        guard !runtimeConfiguration.isDemoMode, let session else { return false }
+        if runtimeConfiguration.isDemoMode {
+            medicationPlans.removeAll { $0.id == plan.id }
+            medicationDoses.removeAll { $0.planID == plan.id }
+            return true
+        }
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
         isMedicationMutating = true
         defer { isMedicationMutating = false }
         do {
@@ -252,7 +533,7 @@ final class AppStore {
             await refreshMedicationReminders()
             return true
         } catch {
-            authError = (error as? LocalizedError)?.errorDescription ?? "Could not archive the medication plan."
+            authError = medicationErrorMessage(error, careRecipientID: plan.careRecipientID, fallback: "Could not archive the medication plan.")
             return false
         }
     }
@@ -332,18 +613,19 @@ final class AppStore {
             caregivers = try await apiClient.familyMembers(homeID: session.homeID).map { account in
                 CaregiverAccount(id: account.id, name: account.name, relationship: account.id == session.userID ? "You" : account.relationship, role: account.role, permissions: account.permissions, isCurrentUser: account.id == session.userID)
             }
-            if let selectedSubjectID, !medicationSubjects.contains(where: { $0.id == selectedSubjectID }) {
-                self.selectedSubjectID = nil
-                selectedSubjectName = "Everyone"
-            }
-            if selectedSubjectID == nil, let subject = medicationSubjects.first {
-                selectedSubjectID = subject.id
-                selectedSubjectName = subject.name
-            }
         } catch {
             authError = (error as? LocalizedError)?.errorDescription ?? "Could not load household access."
         }
         await refreshCareRecipients()
+        await refreshConsents()
+        if let selectedSubjectID, !medicationSubjects.contains(where: { $0.id == selectedSubjectID }) {
+            self.selectedSubjectID = nil
+            selectedSubjectName = "Everyone"
+        }
+        if selectedSubjectID == nil, let subject = medicationSubjects.first {
+            selectedSubjectID = subject.id
+            selectedSubjectName = subject.name
+        }
         await refreshMedicationPlans()
         await refreshMedicationReminders()
     }
@@ -380,6 +662,10 @@ final class AppStore {
 
         if runtimeConfiguration.isDemoMode {
             careRecipients.append(CareRecipient(id: UUID(), displayName: trimmedName, relationship: trimmedRelationship, roomLabel: trimmedRoom))
+            if selectedSubjectID == nil, let recipient = careRecipients.last {
+                selectedSubjectID = recipient.id
+                selectedSubjectName = recipient.displayName
+            }
             syncActiveCareSpaceRecipients()
             return true
         }
@@ -394,6 +680,10 @@ final class AppStore {
                 request: CareRecipientCreateRequest(displayName: trimmedName, relationship: trimmedRelationship, roomLabel: trimmedRoom)
             )
             careRecipients.append(recipient)
+            if selectedSubjectID == nil {
+                selectedSubjectID = recipient.id
+                selectedSubjectName = recipient.displayName
+            }
             syncActiveCareSpaceRecipients()
             await refreshCareSpaces()
             return true
@@ -426,6 +716,9 @@ final class AppStore {
                 careRecipients[index].relationship = trimmedRelationship
                 careRecipients[index].roomLabel = trimmedRoom
             }
+            if selectedSubjectID == recipient.id {
+                selectedSubjectName = trimmedName
+            }
             syncActiveCareSpaceRecipients()
             return true
         }
@@ -441,6 +734,9 @@ final class AppStore {
                 request: CareRecipientUpdateRequest(displayName: trimmedName, relationship: trimmedRelationship, roomLabel: trimmedRoom)
             )
             if let index = careRecipients.firstIndex(where: { $0.id == updated.id }) { careRecipients[index] = updated }
+            if selectedSubjectID == updated.id {
+                selectedSubjectName = updated.displayName
+            }
             syncActiveCareSpaceRecipients()
             await refreshCareSpaces()
             return true
@@ -462,6 +758,12 @@ final class AppStore {
 
         if runtimeConfiguration.isDemoMode {
             careRecipients.removeAll { $0.id == recipientID }
+            medicationPlans.removeAll { $0.careRecipientID == recipientID }
+            medicationDoses.removeAll { $0.careRecipientID == recipientID }
+            if selectedSubjectID == recipientID {
+                selectedSubjectID = careRecipients.first?.id
+                selectedSubjectName = careRecipients.first?.displayName ?? "Everyone"
+            }
             syncActiveCareSpaceRecipients()
             return true
         }
@@ -473,6 +775,12 @@ final class AppStore {
         do {
             try await apiClient.deleteCareRecipient(homeID: session.homeID, recipientID: recipientID)
             careRecipients.removeAll { $0.id == recipientID }
+            medicationPlans.removeAll { $0.careRecipientID == recipientID }
+            medicationDoses.removeAll { $0.careRecipientID == recipientID }
+            if selectedSubjectID == recipientID {
+                selectedSubjectID = careRecipients.first?.id
+                selectedSubjectName = careRecipients.first?.displayName ?? "Everyone"
+            }
             syncActiveCareSpaceRecipients()
             await refreshCareSpaces()
             return true
@@ -486,6 +794,67 @@ final class AppStore {
         careRecipientError = nil
     }
 
+    @discardableResult
+    func setMedicationRemindersEnabled(for recipient: CareRecipient, enabled: Bool) async -> Bool {
+        guard canManageCareRecipients else {
+            careRecipientError = "Only a caregiver can change medication reminders for this person."
+            return false
+        }
+
+        if runtimeConfiguration.isDemoMode {
+            if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+                careRecipients[index].medicationRemindersEnabled = enabled
+            }
+            return true
+        }
+        guard let session else {
+            careRecipientError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        let previousValue = careRecipients.first(where: { $0.id == recipient.id })?.medicationRemindersEnabled
+        if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+            careRecipients[index].medicationRemindersEnabled = enabled
+        }
+        do {
+            try await apiClient.recordConsent(
+                homeID: session.homeID,
+                request: ConsentRequest(purpose: "medication_management", policyVersion: "2026-09", granted: enabled, careRecipientID: recipient.id)
+            )
+            await refreshCareRecipients()
+            if selectedSubjectID == recipient.id {
+                await refreshMedicationPlans()
+                await refreshMedicationReminders()
+            }
+            return true
+        } catch {
+            if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+                careRecipients[index].medicationRemindersEnabled = previousValue
+            }
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not update medication reminders for this person."
+            return false
+        }
+    }
+
+    func sendFamilyAssistantMessage(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        familyAssistantMessages.append(AssistantMessage(isUser: true, text: trimmed))
+        if runtimeConfiguration.isDemoMode {
+            familyAssistantMessages.append(AssistantMessage(isUser: false, text: "Today's medication plan is ready for review. This demo assistant only summarizes recorded plans and check-ins."))
+            return
+        }
+        guard let session else {
+            authError = OneAPIError.missingSession.localizedDescription
+            return
+        }
+        do {
+            let result = try await apiClient.familyAssistant(homeID: session.homeID, request: FamilyAssistantRequest(message: trimmed, careRecipientID: selectedSubjectID))
+            familyAssistantMessages.append(AssistantMessage(isUser: false, text: "\(result.summary)\n\n\(result.nextAction)\n\n\(result.limitations)"))
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "The caregiver assistant is unavailable."
+        }
+    }
+
     func refreshLiveData() async {
         guard !runtimeConfiguration.isDemoMode, let session else { return }
         do { events = try await apiClient.events(homeID: session.homeID) } catch { events = [] }
@@ -493,13 +862,7 @@ final class AppStore {
             let objects = try await apiClient.roomObjects(homeID: session.homeID)
             scan = RoomScan(id: scan.id, schemaVersion: scan.schemaVersion, capturedAt: scan.capturedAt, units: scan.units, upAxis: scan.upAxis, objects: objects, zones: scan.zones, artifactHash: scan.artifactHash, exportedUSDZName: scan.exportedUSDZName)
         } catch { scan = .empty }
-        do {
-            pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
-            cameraCount = pairedCameras.count
-        } catch {
-            pairedCameras = []
-            cameraCount = 0
-        }
+        await refreshCameraConfiguration()
         await refreshScene()
         await refreshFamilyData()
     }
@@ -590,15 +953,47 @@ final class AppStore {
         careSpaceError = nil
     }
 
-    func startCameraPairing(label: String = "ONE room camera") async {
+    func refreshCameraConfiguration() async {
         guard !runtimeConfiguration.isDemoMode, let session else { return }
+        do {
+            pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+            cameraCount = pairedCameras.count
+        } catch {
+            pairedCameras = []
+            cameraCount = 0
+        }
+        do {
+            cameraRooms = try await apiClient.cameraRooms(homeID: session.homeID)
+        } catch {
+            cameraRooms = []
+        }
+    }
+
+    func startCameraPairing(label: String = "ONE room camera", roomID: UUID? = nil) async {
         guard role != .resident else {
             cameraPairingError = "Only a caregiver can pair a room camera."
             return
         }
+        if runtimeConfiguration.isDemoMode {
+            let id = UUID()
+            cameraPairingChallenge = CameraPairingChallenge(pairingID: id, pairingCode: "482701", expiresInSeconds: 600)
+            cameraPairingStatus = CameraPairingStatus(
+                pairingID: id,
+                status: "connected",
+                expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)),
+                connectedAt: ISO8601DateFormatter().string(from: Date()),
+                device: .init(id: id, label: label, role: "publisher")
+            )
+            pairedCameras.insert(PairedCamera(id: id, name: label, roomID: roomID, status: "online"), at: 0)
+            cameraCount = pairedCameras.count
+            cameraPairingError = nil
+            return
+        }
+        guard let session else { return }
         isCameraPairingBusy = true
         cameraPairingError = nil
         cameraPairingStatus = nil
+        pendingCameraRoomID = roomID
         defer { isCameraPairingBusy = false }
         do {
             cameraPairingChallenge = try await apiClient.startCameraPairing(homeID: session.homeID, label: label)
@@ -616,6 +1011,16 @@ final class AppStore {
             cameraPairingError = nil
             if status.status == "connected" {
                 pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+                if let roomID = pendingCameraRoomID,
+                   let camera = pairedCameras.first(where: { $0.id == status.device.id }),
+                   camera.roomID != roomID {
+                    try await apiClient.updateCamera(
+                        homeID: session.homeID,
+                        cameraID: camera.id,
+                        request: CameraUpdateRequest(name: camera.name, roomID: roomID)
+                    )
+                    pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+                }
                 cameraCount = pairedCameras.count
             }
         } catch {
@@ -628,6 +1033,62 @@ final class AppStore {
         cameraPairingStatus = nil
         cameraPairingError = nil
         isCameraPairingBusy = false
+        pendingCameraRoomID = nil
+    }
+
+    func updateCamera(_ camera: PairedCamera, name: String, roomID: UUID?) async -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            cameraPairingError = "Camera name cannot be empty."
+            return false
+        }
+        if runtimeConfiguration.isDemoMode {
+            if let index = pairedCameras.firstIndex(where: { $0.id == camera.id }) {
+                pairedCameras[index] = PairedCamera(id: camera.id, name: trimmedName, roomID: roomID, status: camera.status)
+            }
+            cameraCount = pairedCameras.count
+            return true
+        }
+        guard let session else {
+            cameraPairingError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        isCameraMutating = true
+        cameraPairingError = nil
+        defer { isCameraMutating = false }
+        do {
+            try await apiClient.updateCamera(homeID: session.homeID, cameraID: camera.id, request: CameraUpdateRequest(name: trimmedName, roomID: roomID))
+            pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+            cameraCount = pairedCameras.count
+            return true
+        } catch {
+            cameraPairingError = (error as? LocalizedError)?.errorDescription ?? "Could not update this camera."
+            return false
+        }
+    }
+
+    func deleteCamera(_ camera: PairedCamera) async -> Bool {
+        if runtimeConfiguration.isDemoMode {
+            pairedCameras.removeAll { $0.id == camera.id }
+            cameraCount = pairedCameras.count
+            return true
+        }
+        guard let session else {
+            cameraPairingError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        isCameraMutating = true
+        cameraPairingError = nil
+        defer { isCameraMutating = false }
+        do {
+            try await apiClient.deleteCamera(homeID: session.homeID, cameraID: camera.id)
+            pairedCameras.removeAll { $0.id == camera.id }
+            cameraCount = pairedCameras.count
+            return true
+        } catch {
+            cameraPairingError = (error as? LocalizedError)?.errorDescription ?? "Could not remove this camera."
+            return false
+        }
     }
 
     func refreshScene() async {
@@ -996,10 +1457,6 @@ final class AppStore {
 
     private func removeFamilyMemberLocally(_ memberID: UUID) {
         caregivers.removeAll { $0.id == memberID }
-        if selectedSubjectID == memberID {
-            selectedSubjectID = nil
-            selectedSubjectName = "Everyone"
-        }
     }
 
     private func normalizedCareRecipientField(_ value: String?) -> String? {
@@ -1017,10 +1474,80 @@ final class AppStore {
         careSpaces[index].residentName = names.first ?? "Resident"
     }
 
+    private func medicationErrorMessage(_ error: Error, careRecipientID: UUID?, fallback: String) -> String {
+        guard let apiError = error as? OneAPIError,
+              case let .server(status, message) = apiError,
+              status == 403,
+              message.localizedCaseInsensitiveContains("consent") || message.localizedCaseInsensitiveContains("medication") else {
+            return (error as? LocalizedError)?.errorDescription ?? fallback
+        }
+        if let careRecipientID,
+           let recipient = careRecipients.first(where: { $0.id == careRecipientID }) {
+            return "Medication reminders are off for \(recipient.displayName). Open their profile and turn on Medication reminders first."
+        }
+        return "Medication reminders are not enabled for this person. Open their profile and turn on Medication reminders first."
+    }
+
     func refreshMedicationReminders() async {
-        guard !runtimeConfiguration.isDemoMode, let session else { return }
-        do { medicationDoses = try await apiClient.medicationReminders(homeID: session.homeID, subjectUserID: selectedSubjectID, day: selectedMedicationDate) }
-        catch { authError = (error as? LocalizedError)?.errorDescription ?? "Could not load medication reminders." }
+        guard let selectedSubjectID else {
+            medicationDoses = []
+            return
+        }
+        if runtimeConfiguration.isDemoMode {
+            ensureDemoMedicationDoses(for: selectedMedicationDate, subjectID: selectedSubjectID)
+            return
+        }
+        guard let session else { return }
+        if let recipient = careRecipients.first(where: { $0.id == selectedSubjectID }), recipient.medicationRemindersEnabled == false {
+            medicationDoses = []
+            return
+        }
+        do { medicationDoses = try await apiClient.medicationReminders(homeID: session.homeID, careRecipientID: selectedSubjectID, day: selectedMedicationDate) }
+        catch { authError = medicationErrorMessage(error, careRecipientID: selectedSubjectID, fallback: "Could not load medication reminders.") }
+    }
+
+    private func ensureDemoMedicationDoses(for date: Date, subjectID: UUID) {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: date)
+        let plans = medicationPlans.filter { $0.active && $0.careRecipientID == subjectID }
+
+        for plan in plans where demoScheduleRuns(plan.schedule, on: day) {
+            let alreadyExists = medicationDoses.contains {
+                $0.planID == plan.id && calendar.isDate($0.scheduledAt, inSameDayAs: day)
+            }
+            guard !alreadyExists else { continue }
+            medicationDoses.append(MedicationDose(
+                id: UUID(),
+                medicationName: plan.name,
+                instructions: plan.instructions,
+                scheduledAt: demoScheduledDate(for: plan.schedule, on: day),
+                status: .scheduled,
+                assignedCaregiverName: plan.assignedCaregiverID.flatMap { caregiverID in
+                    caregivers.first(where: { $0.id == caregiverID })?.name
+                },
+                careRecipientID: subjectID,
+                planID: plan.id
+            ))
+        }
+    }
+
+    private func demoScheduleRuns(_ schedule: String, on date: Date) -> Bool {
+        let lowercased = schedule.lowercased()
+        let weekday = Calendar.current.component(.weekday, from: date)
+        if lowercased.contains("weekday") { return (2...6).contains(weekday) }
+        if lowercased.contains("weekend") { return weekday == 1 || weekday == 7 }
+
+        let aliases = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+        let explicitDays = aliases.filter { lowercased.contains($0) }
+        return explicitDays.isEmpty || explicitDays.contains(aliases[weekday - 1])
+    }
+
+    private func demoScheduledDate(for schedule: String, on day: Date) -> Date {
+        let clock = schedule.split(separator: "@").last.map(String.init) ?? "08:00"
+        let fields = clock.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
+        let hour = min(max(Int(fields.first ?? "8") ?? 8, 0), 23)
+        let minute = min(max(Int(fields.dropFirst().first ?? "0") ?? 0, 0), 59)
+        return Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
     }
 
     func uploadCurrentMap() async {
@@ -1061,6 +1588,9 @@ final class AppStore {
         pendingRoomPlanUSDZData = nil
         mapUploadResult = nil
         consents = []
+        consentError = nil
+        isConsentsLoading = false
+        isConsentMutating = false
         caregivers = []
         careRecipients = []
         selectedSubjectID = nil
@@ -1071,6 +1601,7 @@ final class AppStore {
         cameraCount = 0
         clearCameraPairing()
         assistantMessages = []
+        familyAssistantMessages = []
         lastDataRequest = nil
     }
 
@@ -1134,11 +1665,32 @@ final class AppStore {
 
     private func upsertOnboardingConsent(label: String, granted: Bool) {
         let now = Date()
-        if let index = consents.firstIndex(where: { $0.purpose == label }) {
+        let mapping = Self.onboardingConsentMapping.first(where: { $0.label == label || $0.purpose == label })
+        if let index = consents.firstIndex(where: {
+            ($0.purpose == label || $0.purpose == mapping?.purpose)
+                && $0.careRecipientID == nil
+                && ($0.subjectUserID == nil || $0.subjectUserID == session?.userID)
+        }) {
             let existing = consents[index]
-            consents[index] = ConsentRecord(id: existing.id, purpose: label, enabled: granted, policyVersion: "2026-09", updatedAt: now)
+            consents[index] = ConsentRecord(
+                id: existing.id,
+                purpose: label,
+                enabled: granted,
+                policyVersion: "2026-09",
+                updatedAt: now,
+                subjectUserID: existing.subjectUserID ?? session?.userID,
+                careRecipientID: nil
+            )
         } else {
-            consents.append(ConsentRecord(id: UUID(), purpose: label, enabled: granted, policyVersion: "2026-09", updatedAt: now))
+            consents.append(ConsentRecord(
+                id: UUID(),
+                purpose: label,
+                enabled: granted,
+                policyVersion: "2026-09",
+                updatedAt: now,
+                subjectUserID: session?.userID,
+                careRecipientID: nil
+            ))
         }
     }
 
