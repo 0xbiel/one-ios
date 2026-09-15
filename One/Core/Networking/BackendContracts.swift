@@ -231,6 +231,28 @@ struct MedicationPlanRequest: Codable, Sendable {
     let instructions: String
     let active: Bool
     let assignedCaregiverID: UUID?
+
+    private enum CodingKeys: String, CodingKey {
+        case subjectUserID, careRecipientID, name, dose, schedule, instructions, active, assignedCaregiverID
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let subjectUserID {
+            try container.encode(subjectUserID.uuidString.lowercased(), forKey: .subjectUserID)
+        }
+        if let careRecipientID {
+            try container.encode(careRecipientID.uuidString.lowercased(), forKey: .careRecipientID)
+        }
+        try container.encode(name, forKey: .name)
+        try container.encode(dose, forKey: .dose)
+        try container.encode(schedule, forKey: .schedule)
+        try container.encode(instructions, forKey: .instructions)
+        try container.encode(active, forKey: .active)
+        if let assignedCaregiverID {
+            try container.encode(assignedCaregiverID.uuidString.lowercased(), forKey: .assignedCaregiverID)
+        }
+    }
 }
 struct MedicationCheckInRequest: Codable, Sendable {
     let scheduledFor: Date
@@ -240,6 +262,16 @@ struct MedicationCheckInRequest: Codable, Sendable {
 struct FamilyAssistantRequest: Codable, Sendable {
     let message: String
     let careRecipientID: UUID?
+
+    private enum CodingKeys: String, CodingKey { case message, careRecipientID }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(message, forKey: .message)
+        if let careRecipientID {
+            try container.encode(careRecipientID.uuidString.lowercased(), forKey: .careRecipientID)
+        }
+    }
 }
 struct FamilyAssistantResult: Codable, Sendable, Equatable {
     let summary: String
@@ -264,7 +296,9 @@ struct MedicationPlanUpdateRequest: Codable, Sendable {
         try container.encodeIfPresent(schedule, forKey: .schedule)
         try container.encodeIfPresent(instructions, forKey: .instructions)
         try container.encodeIfPresent(active, forKey: .active)
-        try container.encodeIfPresent(assignedCaregiverID, forKey: .assignedCaregiverID)
+        if let assignedCaregiverID {
+            try container.encode(assignedCaregiverID.uuidString.lowercased(), forKey: .assignedCaregiverID)
+        }
         try container.encodeIfPresent(version, forKey: .version)
     }
 }

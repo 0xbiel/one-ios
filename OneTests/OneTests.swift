@@ -636,6 +636,47 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(day, "2026-09-15")
     }
 
+    func testLiveMedicationPlanCreateUsesLowercaseUUIDBodyIdentifiers() async throws {
+        let homeID = UUID()
+        let subjectUserID = UUID()
+        let careRecipientID = UUID()
+        let assignedCaregiverID = UUID()
+        let planID = UUID()
+        var capturedRequest: URLRequest?
+        OneURLProtocolStub.handler = { request in
+            capturedRequest = request
+            let body = Data("""
+            {"id":"\(planID.uuidString.lowercased())","home_id":"\(homeID.uuidString.lowercased())","subject_user_id":"\(subjectUserID.uuidString.lowercased())","care_recipient_id":"\(careRecipientID.uuidString.lowercased())","name":"Morning","dose":"1 tablet","schedule":"Daily @ 08:00","instructions":"With breakfast","active":true,"version":1,"assigned_caregiver_id":"\(assignedCaregiverID.uuidString.lowercased())"}
+            """.utf8)
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        _ = try await client.createMedicationPlan(
+            homeID: homeID,
+            request: MedicationPlanRequest(
+                subjectUserID: nil,
+                careRecipientID: careRecipientID,
+                name: "Morning",
+                dose: "1 tablet",
+                schedule: "Daily @ 08:00",
+                instructions: "With breakfast",
+                active: true,
+                assignedCaregiverID: assignedCaregiverID
+            )
+        )
+
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertEqual(request.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/medication-plans")
+        let body = try XCTUnwrap(requestBody(request))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertNil(payload["subject_user_id"])
+        XCTAssertEqual(payload["care_recipient_id"] as? String, careRecipientID.uuidString.lowercased())
+        XCTAssertEqual(payload["assigned_caregiver_id"] as? String, assignedCaregiverID.uuidString.lowercased())
+    }
+
     func testPrivacyConsentChoicesRemainVisibleWhenLiveHomeHasNoSavedRows() {
         let session = AuthSession(accessToken: "token", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: Date().addingTimeInterval(3_600))
         let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
