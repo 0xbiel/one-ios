@@ -766,6 +766,15 @@ struct CameraCalibrationSheet: View {
                             .foregroundStyle(OneTheme.secondaryInk)
                     }
                 }
+                if calibration.status == .waitingForPerson, let message = calibration.error, !message.isEmpty {
+                    Label(message, systemImage: "camera.viewfinder")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(OneTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
             }
         }
 
