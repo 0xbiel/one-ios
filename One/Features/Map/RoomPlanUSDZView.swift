@@ -8,9 +8,16 @@ struct RoomPlanUSDZView: View {
     let mapID: UUID?
     let cameraRegistration: CameraRegistrationDescriptor?
     let objects: [RoomObject]
+    var calibrationTargets: [RoomPlanCalibrationTarget] = []
 
     var body: some View {
-        RealityKitRoomView(url: url, mapID: mapID, cameraRegistration: cameraRegistration, objects: objects)
+        RealityKitRoomView(
+            url: url,
+            mapID: mapID,
+            cameraRegistration: cameraRegistration,
+            objects: objects,
+            calibrationTargets: calibrationTargets
+        )
         .background(
             LinearGradient(
                 colors: [Color(red: 0.09, green: 0.16, blue: 0.26), Color(red: 0.16, green: 0.34, blue: 0.42)],
@@ -28,6 +35,7 @@ private struct RealityKitRoomView: UIViewRepresentable {
     let mapID: UUID?
     let cameraRegistration: CameraRegistrationDescriptor?
     let objects: [RoomObject]
+    let calibrationTargets: [RoomPlanCalibrationTarget]
 
     final class Coordinator {
         var loadedURL: URL?
@@ -101,8 +109,37 @@ private struct RealityKitRoomView: UIViewRepresentable {
         overlay.name = "one-roomplan-overlays"
         addCameraOverlay(to: overlay)
         addLivePeople(to: overlay)
+        addCalibrationTargets(to: overlay)
         roomModel.addChild(overlay)
         context.coordinator.overlayContainer = overlay
+    }
+
+    private func addCalibrationTargets(to overlay: Entity) {
+        for target in calibrationTargets {
+            let color: UIColor
+            switch target.state {
+            case "active": color = .systemOrange
+            case "complete": color = .systemTeal
+            default: color = .systemGray2
+            }
+            let radius: Float = target.state == "active" ? 0.20 : 0.15
+            let floorPoint = SIMD3<Float>(Float(target.x), Float(target.y), Float(target.z))
+            let disc = ModelEntity(
+                mesh: .generateCylinder(height: 0.025, radius: radius),
+                materials: [SimpleMaterial(color: color.withAlphaComponent(0.92), isMetallic: false)]
+            )
+            disc.position = floorPoint + SIMD3<Float>(0, 0.014, 0)
+            disc.name = "one-calibration-target-\(target.index)"
+            overlay.addChild(disc)
+
+            let marker = ModelEntity(
+                mesh: .generateSphere(radius: target.state == "active" ? 0.075 : 0.055),
+                materials: [SimpleMaterial(color: color, isMetallic: false)]
+            )
+            marker.position = floorPoint + SIMD3<Float>(0, 0.16, 0)
+            marker.name = "one-calibration-target-pin-\(target.index)"
+            overlay.addChild(marker)
+        }
     }
 
     private func addCameraOverlay(to overlay: Entity) {

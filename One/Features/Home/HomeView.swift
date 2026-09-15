@@ -589,6 +589,11 @@ struct CameraCalibrationSheet: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .interactiveDismissDisabled(isWorking)
+        .task {
+            if store.scene.hasReadyUSDZ, store.roomPlanModelURL == nil {
+                await store.retryRoomPlanModel()
+            }
+        }
         .task(id: calibration?.sessionID) {
             guard calibration != nil else { return }
             while !Task.isCancelled && !saved {
@@ -745,6 +750,7 @@ struct CameraCalibrationSheet: View {
                     onSelect: nil
                 )
                 .frame(height: 320)
+                calibration3DGuide(calibration)
                 if let target = currentTarget, calibration.status != .solving {
                     HStack(spacing: 10) {
                         metric("X", value: target.x)
@@ -772,6 +778,35 @@ struct CameraCalibrationSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(OneTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .padding(.top, 16)
+        }
+    }
+
+    @ViewBuilder
+    private func calibration3DGuide(_ calibration: RoomPlanCalibrationSession) -> some View {
+        if let url = store.roomPlanModelURL, store.scene.hasReadyUSDZ {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("3D room guide", systemImage: "cube.transparent")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(OneTheme.ink)
+                    Spacer()
+                    Text("Drag to rotate")
+                        .font(.caption)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+                RoomPlanUSDZView(
+                    url: url,
+                    mapID: calibration.mapID,
+                    cameraRegistration: nil,
+                    objects: [],
+                    calibrationTargets: calibration.targets
+                )
+                .frame(height: 260)
+                Text("The same four floor targets are pinned directly onto the RoomPlan model. Furniture stays visible so you can match the point to the real room before walking to it.")
+                    .font(.footnote)
+                    .foregroundStyle(OneTheme.secondaryInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -936,8 +971,60 @@ private struct CameraCalibrationFloorMap: View {
         } ?? []
     }
 
+    private var objectPolygons: [[SIMD2<Double>]] {
+        scan?.objects.map { object in
+            let halfX = object.dimensions.x * 0.5
+            let halfZ = object.dimensions.z * 0.5
+            let local = [
+                SIMD2(-halfX, -halfZ),
+                SIMD2(halfX, -halfZ),
+                SIMD2(halfX, halfZ),
+                SIMD2(-halfX, halfZ),
+            ]
+            guard object.transform.count == 4,
+                  object.transform.allSatisfy({ $0.count == 4 }) else {
+                return local.map { SIMD2(object.center.x + $0.x, object.center.z + $0.y) }
+            }
+            return local.map { point in
+                SIMD2(
+                    object.transform[0][0] * point.x + object.transform[0][2] * point.y + object.transform[0][3],
+                    object.transform[2][0] * point.x + object.transform[2][2] * point.y + object.transform[2][3]
+                )
+            }
+        } ?? []
+    }
+
+    private var wallSegments: [(SIMD2<Double>, SIMD2<Double>)] {
+        scan?.walls.compactMap { wall in
+            var points: [SIMD2<Double>] = []
+            for vertex in wall.vertices {
+                let candidate = SIMD2(vertex.x, vertex.z)
+                if !points.contains(where: { abs($0.x - candidate.x) < 0.001 && abs($0.y - candidate.y) < 0.001 }) {
+                    points.append(candidate)
+                }
+            }
+            guard points.count >= 2 else { return nil }
+            var best = (points[0], points[1])
+            var bestDistance = -Double.infinity
+            for start in points.indices {
+                for end in points.indices where end > start {
+                    let dx = points[end].x - points[start].x
+                    let dz = points[end].y - points[start].y
+                    let distance = dx * dx + dz * dz
+                    if distance > bestDistance {
+                        bestDistance = distance
+                        best = (points[start], points[end])
+                    }
+                }
+            }
+            return best
+        } ?? []
+    }
+
     private var bounds: (minX: Double, maxX: Double, minZ: Double, maxZ: Double) {
         var points = floorPolygons.flatMap { $0 }
+        points.append(contentsOf: objectPolygons.flatMap { $0 })
+        points.append(contentsOf: wallSegments.flatMap { [$0.0, $0.1] })
         points.append(contentsOf: targets.map { SIMD2($0.x, $0.z) })
         if let cameraPoint { points.append(cameraPoint) }
         if let selection { points.append(selection) }
@@ -964,6 +1051,20 @@ private struct CameraCalibrationFloorMap: View {
                         path.closeSubpath()
                         context.fill(path, with: .color(Color.white.opacity(0.88)))
                         context.stroke(path, with: .color(OneTheme.accentBlue.opacity(0.42)), lineWidth: 1)
+                    }
+                    for (start, end) in wallSegments {
+                        var wall = Path()
+                        wall.move(to: screenPoint(start, size: size))
+                        wall.addLine(to: screenPoint(end, size: size))
+                        context.stroke(wall, with: .color(Color.white.opacity(0.78)), lineWidth: 3)
+                    }
+                    for polygon in objectPolygons where polygon.count >= 3 {
+                        var path = Path()
+                        path.move(to: screenPoint(polygon[0], size: size))
+                        for point in polygon.dropFirst() { path.addLine(to: screenPoint(point, size: size)) }
+                        path.closeSubpath()
+                        context.fill(path, with: .color(Color(red: 0.77, green: 0.82, blue: 0.86).opacity(0.88)))
+                        context.stroke(path, with: .color(Color(red: 0.25, green: 0.39, blue: 0.50).opacity(0.75)), lineWidth: 1.25)
                     }
                     for target in targets {
                         let point = screenPoint(SIMD2(target.x, target.z), size: size)
