@@ -873,29 +873,46 @@ struct CameraCalibrationSheet: View {
                 .controlSize(.large)
                 .disabled(isWorking)
         } else if let calibration, calibration.status == .waitingForPerson {
-            Button("I’m standing on point \(calibration.currentTargetIndex + 1)") {
-                Task {
-                    isWorking = true
-                    if let updated = await store.requestRoomPlanCalibrationCapture(for: camera, targetIndex: calibration.currentTargetIndex) {
-                        self.calibration = updated
+            Button {
+                Task { await requestCurrentCapture() }
+            } label: {
+                VStack(spacing: 2) {
+                    Text(isWorking ? "Requesting capture…" : "Continue")
+                        .font(.headline)
+                    if !isWorking {
+                        Text("I’m standing on point \(calibration.currentTargetIndex + 1)")
+                            .font(.caption)
                     }
-                    isWorking = false
                 }
+                .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(OneTheme.accentBlue)
             .controlSize(.large)
             .disabled(isWorking)
-        } else {
-            HStack {
-                ProgressView().tint(OneTheme.accentBlue)
-                Text(calibration?.status == .solving ? "Solving camera position…" : "Waiting for the fixed camera…")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(OneTheme.secondaryInk)
+        } else if calibration?.status == .captureRequested {
+            Button(isWorking ? "Retrying capture…" : "Retry fixed-camera capture") {
+                Task { await requestCurrentCapture() }
             }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .disabled(isWorking)
+        } else {
+            EmptyView()
         }
+    }
+
+    private func requestCurrentCapture() async {
+        guard let calibration else { return }
+        isWorking = true
+        if let updated = await store.requestRoomPlanCalibrationCapture(
+            for: camera,
+            targetIndex: calibration.currentTargetIndex
+        ) {
+            self.calibration = updated
+        }
+        isWorking = false
     }
 
     private func startCalibration() async {
