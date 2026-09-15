@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct CaregiverShell: View {
@@ -390,6 +391,11 @@ private struct CameraManagerRow: View {
                 Text(roomName)
                     .font(.subheadline)
                     .foregroundStyle(OneTheme.secondaryInk)
+                if camera.calibrationNeeded {
+                    Label("Calibration needed", systemImage: "scope")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(OneTheme.amber)
+                }
             }
             Spacer(minLength: 8)
             Text(camera.status.capitalized)
@@ -411,6 +417,7 @@ private struct CameraEditorSheet: View {
     @State private var name: String
     @State private var roomID: UUID?
     @State private var showDeleteConfirmation = false
+    @State private var showCalibration = false
 
     init(store: AppStore, camera: PairedCamera) {
         self.store = store
@@ -443,6 +450,24 @@ private struct CameraEditorSheet: View {
                 Section {
                     Label(camera.status.capitalized, systemImage: camera.status == "online" ? "checkmark.circle.fill" : "wifi.slash")
                         .foregroundStyle(camera.status == "online" ? OneTheme.mint : OneTheme.secondaryInk)
+                    if camera.roomplanMapID != nil {
+                        HStack {
+                            Label(
+                                camera.calibrationNeeded ? "Calibration needed" : "Camera positioned",
+                                systemImage: camera.calibrationNeeded ? "scope" : "camera.viewfinder"
+                            )
+                            .foregroundStyle(camera.calibrationNeeded ? OneTheme.amber : OneTheme.accentBlue)
+                            Spacer()
+                            Button(camera.calibrationNeeded ? "Calibrate" : "Recalibrate") {
+                                showCalibration = true
+                            }
+                            .font(.subheadline.weight(.semibold))
+                        }
+                    } else {
+                        Label("Scan the room with LiDAR before positioning this camera.", systemImage: "viewfinder")
+                            .font(.footnote)
+                            .foregroundStyle(OneTheme.secondaryInk)
+                    }
                     Text("Changing the room or camera details can require camera positioning to be refreshed on the map.")
                         .font(.footnote)
                         .foregroundStyle(OneTheme.secondaryInk)
@@ -480,7 +505,521 @@ private struct CameraEditorSheet: View {
                 }
                 Button("Cancel", role: .cancel) { }
             }
+            .sheet(isPresented: $showCalibration) {
+                CameraCalibrationSheet(store: store, camera: camera)
+            }
         }
+    }
+}
+
+struct CameraCalibrationSheet: View {
+    @Bindable var store: AppStore
+    let camera: PairedCamera
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var calibration: RoomPlanCalibrationSession?
+    @State private var isWorking = false
+    @State private var manualMode = false
+    @State private var manualPoint: SIMD2<Double>?
+    @State private var manualHeight = 1.25
+    @State private var manualYaw = 0.0
+    @State private var saved = false
+
+    private var scan: RoomPlanNormalizedScan? { store.scene.canonicalGeometry ?? store.scene.geometry }
+    private var currentTarget: RoomPlanCalibrationTarget? {
+        guard let calibration else { return nil }
+        return calibration.targets.first(where: { $0.index == calibration.currentTargetIndex })
+    }
+    private var proposalPoint: SIMD2<Double>? {
+        guard let matrix = calibration?.proposal?.cameraToWorld,
+              matrix.count == 4,
+              matrix[0].count == 4,
+              matrix[2].count == 4 else { return nil }
+        return SIMD2(matrix[0][3], matrix[2][3])
+    }
+    private var defaultMapPoint: SIMD2<Double> {
+        let points = scan?.floors.flatMap { floor -> [SIMD2<Double>] in
+            if floor.vertices.count >= 3 {
+                return floor.vertices.map { SIMD2($0.x, $0.z) }
+            }
+            let halfX = floor.dimensions.x / 2
+            let halfZ = floor.dimensions.z / 2
+            return [
+                SIMD2(floor.center.x - halfX, floor.center.z - halfZ),
+                SIMD2(floor.center.x + halfX, floor.center.z - halfZ),
+                SIMD2(floor.center.x + halfX, floor.center.z + halfZ),
+                SIMD2(floor.center.x - halfX, floor.center.z + halfZ),
+            ]
+        } ?? []
+        guard !points.isEmpty else { return SIMD2(0, 0) }
+        return SIMD2(
+            points.reduce(0.0) { $0 + $1.x } / Double(points.count),
+            points.reduce(0.0) { $0 + $1.y } / Double(points.count)
+        )
+    }
+    private var floorY: Double { scan?.floors.first?.center.y ?? 0 }
+
+    var body: some View {
+        NavigationStack {
+            GeometryReader { proxy in
+                let contentWidth = min(max(proxy.size.width - 40, 1), 560)
+                VStack(spacing: 0) {
+                    header
+                        .frame(width: contentWidth)
+                        .frame(maxWidth: .infinity)
+                    ScrollView(showsIndicators: false) {
+                        content
+                            .frame(width: contentWidth, alignment: .leading)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 22)
+                            .padding(.bottom, 22)
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: calibration?.status)
+                    }
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    footer
+                        .frame(width: contentWidth)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 10)
+                        .padding(.bottom, 8)
+                        .background(OneTheme.canvas.opacity(0.98).ignoresSafeArea(edges: .horizontal))
+                }
+            }
+            .background(OneBackground())
+            .toolbar(.hidden, for: .navigationBar)
+        }
+        .interactiveDismissDisabled(isWorking)
+        .task(id: calibration?.sessionID) {
+            guard calibration != nil else { return }
+            while !Task.isCancelled && !saved {
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                guard !Task.isCancelled, !saved else { break }
+                if let refreshed = await store.refreshRoomPlanCalibration(for: camera) {
+                    calibration = refreshed
+                    if refreshed.status == .review, manualPoint == nil {
+                        manualPoint = proposalPoint ?? defaultMapPoint
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            guard calibration != nil, !saved else { return }
+            Task { await store.cancelRoomPlanCalibration(for: camera) }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            OneBrandMark(compact: true)
+            Spacer()
+            Text("CAMERA CALIBRATION")
+                .font(.caption2.weight(.semibold))
+                .tracking(0.8)
+                .foregroundStyle(OneTheme.secondaryInk)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(OneTheme.ink)
+                    .frame(width: 38, height: 38)
+                    .background(OneTheme.surface, in: Circle())
+                    .overlay { Circle().stroke(OneTheme.secondaryInk.opacity(0.14), lineWidth: 0.75) }
+            }
+            .buttonStyle(.plain)
+            .disabled(isWorking)
+            .accessibilityLabel("Close camera calibration")
+        }
+        .padding(.top, 14)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if saved {
+            VStack(alignment: .leading, spacing: 20) {
+                title(eyebrow: "POSITION SAVED", title: "The fixed camera is calibrated.", body: "ONE will use this reviewed position for RoomPlan projections while the camera stays in the same physical place.")
+                SurfaceCard(radius: 24) {
+                    Label("Camera positioned in the RoomPlan map", systemImage: "checkmark.seal.fill")
+                        .font(.headline)
+                        .foregroundStyle(OneTheme.accentBlue)
+                        .padding(18)
+                }
+            }
+        } else if calibration == nil {
+            VStack(alignment: .leading, spacing: 20) {
+                title(eyebrow: "GUIDED SETUP", title: "Walk four points. Keep the room camera still.", body: "This iPhone guides you to known LiDAR floor positions. The paired fixed camera captures the calibration frames itself, so the pose matches the camera that will actually remain in the room.")
+                SurfaceCard(radius: 24) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        requirement("Leave \(camera.name) in its final fixed position", symbol: "camera.fill")
+                        requirement("Keep its browser camera preview open", symbol: "macbook.and.iphone")
+                        requirement("Stand briefly on each highlighted floor point", symbol: "figure.stand")
+                        requirement("Other people may stay in frame", symbol: "person.2.fill")
+                    }
+                    .padding(18)
+                }
+                Text("Calibration images are held only for this short session and are not saved as room media.")
+                    .font(.footnote)
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+        } else if calibration?.status == .review, !manualMode {
+            VStack(alignment: .leading, spacing: 18) {
+                title(eyebrow: "REVIEW", title: "Check the camera placement.", body: "The dark camera marker is ONE’s proposed fixed-camera position. Save it only if it matches where the camera really is.")
+                CameraCalibrationFloorMap(
+                    scan: scan,
+                    targets: calibration?.targets ?? [],
+                    cameraPoint: proposalPoint,
+                    selection: nil,
+                    onSelect: nil
+                )
+                .frame(height: 320)
+                if let confidence = calibration?.proposal?.confidence {
+                    Label("Automatic placement confidence \(Int((confidence * 100).rounded()))%", systemImage: "scope")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+                Button {
+                    manualPoint = proposalPoint ?? defaultMapPoint
+                    manualMode = true
+                } label: {
+                    Label("Position it manually instead", systemImage: "hand.tap.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        } else if manualMode, let calibration {
+            VStack(alignment: .leading, spacing: 18) {
+                title(eyebrow: "MANUAL POSITION", title: "Tap where the camera really is.", body: "Place the marker on the floor plan, then set its mounting height and viewing direction before saving.")
+                CameraCalibrationFloorMap(
+                    scan: scan,
+                    targets: calibration.targets,
+                    cameraPoint: nil,
+                    selection: manualPoint,
+                    onSelect: { manualPoint = $0 }
+                )
+                .frame(height: 320)
+                SurfaceCard(radius: 22) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Text("Height").font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text(String(format: "%.2f m", manualHeight)).font(.subheadline.monospacedDigit())
+                        }
+                        Slider(value: $manualHeight, in: 0.4...3.0, step: 0.05)
+                        HStack {
+                            Text("Direction").font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text("\(Int(manualYaw.rounded()))°").font(.subheadline.monospacedDigit())
+                        }
+                        Slider(value: $manualYaw, in: 0...359, step: 1)
+                    }
+                    .padding(18)
+                }
+                Button("Back to automatic proposal") { manualMode = false }
+                    .font(.subheadline.weight(.semibold))
+            }
+        } else if let calibration, calibration.status == .failed || calibration.status == .expired {
+            VStack(alignment: .leading, spacing: 18) {
+                title(eyebrow: "TRY AGAIN", title: "The camera position needs another pass.", body: calibration.error ?? "The temporary calibration session expired or did not produce a stable pose.")
+                SurfaceCard(radius: 22) {
+                    Label("The existing camera position was not replaced.", systemImage: "lock.shield.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(OneTheme.secondaryInk)
+                        .padding(18)
+                }
+            }
+        } else if let calibration {
+            VStack(alignment: .leading, spacing: 18) {
+                let number = min(calibration.currentTargetIndex + 1, calibration.targets.count)
+                title(
+                    eyebrow: calibration.status == .solving ? "SOLVING" : "POINT \(number) OF \(calibration.targets.count)",
+                    title: calibration.status == .solving ? "Finding the fixed camera in 3D." : "Stand on the highlighted point.",
+                    body: calibration.status == .captureRequested
+                        ? "Stay on the point for a moment. The fixed camera is capturing two short frames now."
+                        : calibration.status == .solving
+                            ? "All four points are captured. ONE is matching them with the RoomPlan landmark index."
+                            : "Move to the amber marker, then tell ONE when you are standing there. Exact centimetres are not required."
+                )
+                CameraCalibrationFloorMap(
+                    scan: scan,
+                    targets: calibration.targets,
+                    cameraPoint: nil,
+                    selection: nil,
+                    onSelect: nil
+                )
+                .frame(height: 320)
+                if let target = currentTarget, calibration.status != .solving {
+                    HStack(spacing: 10) {
+                        metric("X", value: target.x)
+                        metric("Z", value: target.z)
+                        metric("DONE", text: "\(calibration.capturedTargetCount)/\(calibration.targets.count)")
+                    }
+                }
+                if calibration.status == .captureRequested || calibration.status == .solving {
+                    HStack(spacing: 10) {
+                        ProgressView().tint(OneTheme.accentBlue)
+                        Text(calibration.status == .solving ? "Solving locally…" : "Waiting for \(camera.name)…")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(OneTheme.secondaryInk)
+                    }
+                }
+            }
+        }
+
+        if let error = store.cameraCalibrationError, !error.isEmpty, !saved {
+            Label(error, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote)
+                .foregroundStyle(OneTheme.amber)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(OneTheme.amber.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.top, 16)
+        }
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if saved {
+            Button("Done") { dismiss() }
+                .buttonStyle(.borderedProminent)
+                .tint(OneTheme.accentBlue)
+                .controlSize(.large)
+        } else if calibration == nil {
+            Button(isWorking ? "Starting…" : "Start calibration") { Task { await startCalibration() } }
+                .buttonStyle(.borderedProminent)
+                .tint(OneTheme.accentBlue)
+                .controlSize(.large)
+                .disabled(isWorking || camera.roomplanMapID == nil)
+        } else if manualMode, let calibration, let manualPoint {
+            Button(isWorking ? "Saving…" : "Save manual position") {
+                Task {
+                    isWorking = true
+                    let success = await store.saveManualRoomPlanCamera(
+                        camera,
+                        mapID: calibration.mapID,
+                        x: manualPoint.x,
+                        z: manualPoint.y,
+                        floorY: floorY,
+                        height: manualHeight,
+                        yawDegrees: manualYaw
+                    )
+                    isWorking = false
+                    if success { saved = true }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(OneTheme.accentBlue)
+            .controlSize(.large)
+            .disabled(isWorking)
+        } else if calibration?.status == .review, let calibration {
+            Button(isWorking ? "Saving…" : "Yes, save this position") {
+                Task {
+                    isWorking = true
+                    let success = await store.confirmRoomPlanCalibration(for: camera, calibration: calibration)
+                    isWorking = false
+                    if success { saved = true }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(OneTheme.accentBlue)
+            .controlSize(.large)
+            .disabled(isWorking)
+        } else if calibration?.status == .failed || calibration?.status == .expired {
+            Button(isWorking ? "Restarting…" : "Run four points again") { Task { await restartCalibration() } }
+                .buttonStyle(.borderedProminent)
+                .tint(OneTheme.accentBlue)
+                .controlSize(.large)
+                .disabled(isWorking)
+        } else if let calibration, calibration.status == .waitingForPerson {
+            Button("I’m standing on point \(calibration.currentTargetIndex + 1)") {
+                Task {
+                    isWorking = true
+                    if let updated = await store.requestRoomPlanCalibrationCapture(for: camera, targetIndex: calibration.currentTargetIndex) {
+                        self.calibration = updated
+                    }
+                    isWorking = false
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(OneTheme.accentBlue)
+            .controlSize(.large)
+            .disabled(isWorking)
+        } else {
+            HStack {
+                ProgressView().tint(OneTheme.accentBlue)
+                Text(calibration?.status == .solving ? "Solving camera position…" : "Waiting for the fixed camera…")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func startCalibration() async {
+        isWorking = true
+        manualMode = false
+        manualPoint = nil
+        calibration = await store.startRoomPlanCalibration(for: camera)
+        isWorking = false
+    }
+
+    private func restartCalibration() async {
+        isWorking = true
+        await store.cancelRoomPlanCalibration(for: camera)
+        manualMode = false
+        manualPoint = nil
+        calibration = await store.startRoomPlanCalibration(for: camera)
+        isWorking = false
+    }
+
+    private func title(eyebrow: String, title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(eyebrow)
+                .font(.caption.weight(.bold))
+                .tracking(1.2)
+                .foregroundStyle(OneTheme.cyan)
+            Text(title)
+                .font(.system(size: 30, weight: .semibold))
+                .tracking(-0.9)
+                .foregroundStyle(OneTheme.ink)
+            Text(body)
+                .font(.body)
+                .foregroundStyle(OneTheme.secondaryInk)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func requirement(_ text: String, symbol: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol)
+                .foregroundStyle(OneTheme.accentBlue)
+                .frame(width: 24)
+            Text(text).font(.subheadline.weight(.medium))
+        }
+    }
+
+    private func metric(_ label: String, value: Double) -> some View {
+        metric(label, text: String(format: "%.2f m", value))
+    }
+
+    private func metric(_ label: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption2.weight(.bold)).foregroundStyle(OneTheme.secondaryInk)
+            Text(text).font(.subheadline.weight(.semibold).monospacedDigit()).foregroundStyle(OneTheme.ink)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(OneTheme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct CameraCalibrationFloorMap: View {
+    let scan: RoomPlanNormalizedScan?
+    let targets: [RoomPlanCalibrationTarget]
+    let cameraPoint: SIMD2<Double>?
+    let selection: SIMD2<Double>?
+    let onSelect: ((SIMD2<Double>) -> Void)?
+
+    private var floorPolygons: [[SIMD2<Double>]] {
+        scan?.floors.compactMap { floor in
+            if floor.vertices.count >= 3 {
+                return floor.vertices.map { SIMD2($0.x, $0.z) }
+            }
+            let halfX = floor.dimensions.x / 2
+            let halfZ = floor.dimensions.z / 2
+            return [
+                SIMD2(floor.center.x - halfX, floor.center.z - halfZ),
+                SIMD2(floor.center.x + halfX, floor.center.z - halfZ),
+                SIMD2(floor.center.x + halfX, floor.center.z + halfZ),
+                SIMD2(floor.center.x - halfX, floor.center.z + halfZ),
+            ]
+        } ?? []
+    }
+
+    private var bounds: (minX: Double, maxX: Double, minZ: Double, maxZ: Double) {
+        var points = floorPolygons.flatMap { $0 }
+        points.append(contentsOf: targets.map { SIMD2($0.x, $0.z) })
+        if let cameraPoint { points.append(cameraPoint) }
+        if let selection { points.append(selection) }
+        guard !points.isEmpty else { return (-1, 1, -1, 1) }
+        let minX = points.map(\.x).min() ?? -1
+        let maxX = points.map(\.x).max() ?? 1
+        let minZ = points.map(\.y).min() ?? -1
+        let maxZ = points.map(\.y).max() ?? 1
+        let spanX = max(maxX - minX, 0.5)
+        let spanZ = max(maxZ - minZ, 0.5)
+        return (minX - spanX * 0.08, maxX + spanX * 0.08, minZ - spanZ * 0.08, maxZ + spanZ * 0.08)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color(red: 0.06, green: 0.15, blue: 0.22))
+                Canvas { context, size in
+                    for polygon in floorPolygons where polygon.count >= 3 {
+                        var path = Path()
+                        path.move(to: screenPoint(polygon[0], size: size))
+                        for point in polygon.dropFirst() { path.addLine(to: screenPoint(point, size: size)) }
+                        path.closeSubpath()
+                        context.fill(path, with: .color(Color.white.opacity(0.88)))
+                        context.stroke(path, with: .color(OneTheme.accentBlue.opacity(0.42)), lineWidth: 1)
+                    }
+                    for target in targets {
+                        let point = screenPoint(SIMD2(target.x, target.z), size: size)
+                        let color: Color = target.state == "complete" ? OneTheme.accentCyan : (target.state == "active" ? OneTheme.amber : OneTheme.secondaryInk.opacity(0.55))
+                        let circle = Path(ellipseIn: CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18))
+                        context.fill(circle, with: .color(color))
+                        context.stroke(circle, with: .color(.white), lineWidth: 2)
+                    }
+                    if let cameraPoint {
+                        let point = screenPoint(cameraPoint, size: size)
+                        let outer = Path(ellipseIn: CGRect(x: point.x - 11, y: point.y - 11, width: 22, height: 22))
+                        context.fill(outer, with: .color(OneTheme.ink))
+                        let inner = Path(ellipseIn: CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8))
+                        context.fill(inner, with: .color(.white))
+                    }
+                    if let selection {
+                        let point = screenPoint(selection, size: size)
+                        let outer = Path(ellipseIn: CGRect(x: point.x - 12, y: point.y - 12, width: 24, height: 24))
+                        context.fill(outer, with: .color(OneTheme.amber))
+                        context.stroke(outer, with: .color(.white), lineWidth: 3)
+                    }
+                }
+                .padding(16)
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        guard let onSelect else { return }
+                        onSelect(worldPoint(value.location, size: proxy.size))
+                    }
+            )
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(onSelect == nil ? "RoomPlan calibration floor map" : "RoomPlan floor map. Tap to place the fixed camera.")
+    }
+
+    private func screenPoint(_ point: SIMD2<Double>, size: CGSize) -> CGPoint {
+        let inset = 28.0
+        let width = max(Double(size.width) - inset * 2, 1)
+        let height = max(Double(size.height) - inset * 2, 1)
+        let normalizedX = (point.x - bounds.minX) / max(bounds.maxX - bounds.minX, 0.001)
+        let normalizedZ = (point.y - bounds.minZ) / max(bounds.maxZ - bounds.minZ, 0.001)
+        return CGPoint(x: inset + normalizedX * width, y: inset + (1 - normalizedZ) * height)
+    }
+
+    private func worldPoint(_ point: CGPoint, size: CGSize) -> SIMD2<Double> {
+        let inset = 28.0
+        let width = max(Double(size.width) - inset * 2, 1)
+        let height = max(Double(size.height) - inset * 2, 1)
+        let nx = min(max((Double(point.x) - inset) / width, 0), 1)
+        let nz = min(max((Double(point.y) - inset) / height, 0), 1)
+        return SIMD2(
+            bounds.minX + nx * (bounds.maxX - bounds.minX),
+            bounds.minZ + (1 - nz) * (bounds.maxZ - bounds.minZ)
+        )
     }
 }
 

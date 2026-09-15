@@ -78,6 +78,7 @@ final class AppStore {
     var isCameraPairingBusy = false
     var isCameraMutating = false
     var cameraPairingError: String?
+    var cameraCalibrationError: String?
     private var pendingCameraRoomID: UUID?
     private var pendingRoomPlanMapID: UUID?
     private var pendingRoomPlanUSDZData: Data?
@@ -969,6 +970,123 @@ final class AppStore {
         }
     }
 
+    func startRoomPlanCalibration(for camera: PairedCamera) async -> RoomPlanCalibrationSession? {
+        guard let session else {
+            cameraCalibrationError = OneAPIError.missingSession.localizedDescription
+            return nil
+        }
+        cameraCalibrationError = nil
+        do {
+            return try await apiClient.startRoomPlanCalibrationSession(homeID: session.homeID, cameraID: camera.id)
+        } catch {
+            cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not start camera calibration."
+            return nil
+        }
+    }
+
+    func refreshRoomPlanCalibration(for camera: PairedCamera) async -> RoomPlanCalibrationSession? {
+        guard let session else { return nil }
+        do {
+            let value = try await apiClient.roomPlanCalibrationSession(homeID: session.homeID, cameraID: camera.id)
+            cameraCalibrationError = nil
+            return value
+        } catch {
+            cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not refresh camera calibration."
+            return nil
+        }
+    }
+
+    func requestRoomPlanCalibrationCapture(for camera: PairedCamera, targetIndex: Int) async -> RoomPlanCalibrationSession? {
+        guard let session else { return nil }
+        do {
+            let value = try await apiClient.requestRoomPlanCalibrationCapture(homeID: session.homeID, cameraID: camera.id, targetIndex: targetIndex)
+            cameraCalibrationError = nil
+            return value
+        } catch {
+            cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not request the fixed-camera capture."
+            return nil
+        }
+    }
+
+    func confirmRoomPlanCalibration(for camera: PairedCamera, calibration: RoomPlanCalibrationSession) async -> Bool {
+        guard let session, let proposal = calibration.proposal else {
+            cameraCalibrationError = "The calibration proposal is not ready yet."
+            return false
+        }
+        do {
+            _ = try await apiClient.registerRoomPlanCamera(
+                homeID: session.homeID,
+                request: RoomPlanCameraRegistrationRequest(
+                    cameraID: camera.id,
+                    mapID: proposal.mapID,
+                    cameraToWorld: proposal.cameraToWorld,
+                    confidence: proposal.confidence,
+                    trackingState: "normal"
+                )
+            )
+            cameraCalibrationError = nil
+            await refreshCameraConfiguration()
+            await refreshScene()
+            return true
+        } catch {
+            cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not save the reviewed camera position."
+            return false
+        }
+    }
+
+    func saveManualRoomPlanCamera(
+        _ camera: PairedCamera,
+        mapID: UUID,
+        x: Double,
+        z: Double,
+        floorY: Double,
+        height: Double,
+        yawDegrees: Double
+    ) async -> Bool {
+        guard let session else {
+            cameraCalibrationError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        let yaw = yawDegrees * .pi / 180
+        let cosine = cos(yaw)
+        let sine = sin(yaw)
+        let matrix = [
+            [cosine, 0.0, -sine, x],
+            [0.0, 1.0, 0.0, floorY + height],
+            [sine, 0.0, cosine, z],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+        do {
+            _ = try await apiClient.registerRoomPlanCamera(
+                homeID: session.homeID,
+                request: RoomPlanCameraRegistrationRequest(
+                    cameraID: camera.id,
+                    mapID: mapID,
+                    cameraToWorld: matrix,
+                    confidence: nil,
+                    trackingState: "normal"
+                )
+            )
+            cameraCalibrationError = nil
+            await refreshCameraConfiguration()
+            await refreshScene()
+            return true
+        } catch {
+            cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not save the manual camera position."
+            return false
+        }
+    }
+
+    func cancelRoomPlanCalibration(for camera: PairedCamera) async {
+        guard let session else { return }
+        do {
+            try await apiClient.cancelRoomPlanCalibrationSession(homeID: session.homeID, cameraID: camera.id)
+            cameraCalibrationError = nil
+        } catch {
+            cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not cancel camera calibration."
+        }
+    }
+
     func startCameraPairing(label: String = "ONE room camera", roomID: UUID? = nil) async {
         guard role != .resident else {
             cameraPairingError = "Only a caregiver can pair a room camera."
@@ -1044,7 +1162,15 @@ final class AppStore {
         }
         if runtimeConfiguration.isDemoMode {
             if let index = pairedCameras.firstIndex(where: { $0.id == camera.id }) {
-                pairedCameras[index] = PairedCamera(id: camera.id, name: trimmedName, roomID: roomID, status: camera.status)
+                pairedCameras[index] = PairedCamera(
+                    id: camera.id,
+                    name: trimmedName,
+                    roomID: roomID,
+                    status: camera.status,
+                    calibrationNeeded: camera.calibrationNeeded,
+                    roomplanRegistrationStatus: camera.roomplanRegistrationStatus,
+                    roomplanMapID: camera.roomplanMapID
+                )
             }
             cameraCount = pairedCameras.count
             return true

@@ -79,6 +79,7 @@ struct RoomMapPin: View { let title: String; let color: Color; var body: some Vi
 struct MapEvidenceSheet: View {
     @Bindable var store: AppStore
     @State private var showScanSetup = false
+    @State private var calibrationCamera: PairedCamera?
 
     var body: some View {
         NavigationStack {
@@ -119,6 +120,37 @@ struct MapEvidenceSheet: View {
                         }
                         if store.scene.source == .roomplanLidar3D {
                             CameraRegistrationStatusCard(registration: store.scene.cameraRegistration)
+                            if let camera = store.pairedCameras.first(where: { $0.calibrationNeeded }) {
+                                SurfaceCard(radius: 20) {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        HStack(spacing: 10) {
+                                            Label("Calibration needed", systemImage: "scope")
+                                                .font(.caption.weight(.bold))
+                                                .foregroundStyle(OneTheme.amber)
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(OneTheme.amber.opacity(0.12), in: Capsule())
+                                            Spacer()
+                                        }
+                                        Text(camera.name)
+                                            .font(.headline)
+                                            .foregroundStyle(OneTheme.ink)
+                                        Text("The LiDAR map is ready, but this fixed camera still needs a reviewed position before its observations can be projected into the room.")
+                                            .font(.caption)
+                                            .foregroundStyle(OneTheme.secondaryInk)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Button {
+                                            calibrationCamera = camera
+                                        } label: {
+                                            Label("Calibrate camera", systemImage: "camera.viewfinder")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(OneTheme.accentBlue)
+                                    }
+                                    .padding(16)
+                                }
+                            }
                         }
                     } else if store.events.isEmpty {
                         SurfaceCard(radius: 20) {
@@ -142,6 +174,11 @@ struct MapEvidenceSheet: View {
             NavigationStack { ScanView(store: store) }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $calibrationCamera) { camera in
+            CameraCalibrationSheet(store: store, camera: camera)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
         }
     }
 }

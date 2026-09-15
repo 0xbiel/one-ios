@@ -462,6 +462,10 @@ protocol OneAPIClient: Sendable {
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus
     func updateCamera(homeID: UUID, cameraID: UUID, request: CameraUpdateRequest) async throws
     func deleteCamera(homeID: UUID, cameraID: UUID) async throws
+    func startRoomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws -> RoomPlanCalibrationSession
+    func roomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws -> RoomPlanCalibrationSession
+    func requestRoomPlanCalibrationCapture(homeID: UUID, cameraID: UUID, targetIndex: Int) async throws -> RoomPlanCalibrationSession
+    func cancelRoomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws
     func careRecipients(homeID: UUID) async throws -> [CareRecipient]
     func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient
     func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient
@@ -621,6 +625,26 @@ struct MockOneAPIClient: OneAPIClient {
     func cameraPairingStatus(homeID: UUID, pairingID: UUID) async throws -> CameraPairingStatus { CameraPairingStatus(pairingID: pairingID, status: "connected", expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)), connectedAt: ISO8601DateFormatter().string(from: Date()), device: .init(id: pairingID, label: "Demo camera", role: "publisher")) }
     func updateCamera(homeID: UUID, cameraID: UUID, request: CameraUpdateRequest) async throws { }
     func deleteCamera(homeID: UUID, cameraID: UUID) async throws { }
+    func startRoomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws -> RoomPlanCalibrationSession {
+        let mapID = UUID()
+        return RoomPlanCalibrationSession(
+            sessionID: UUID(), cameraID: cameraID, mapID: mapID, status: .waitingForPerson,
+            currentTargetIndex: 0, capturedTargetCount: 0,
+            targets: [
+                .init(index: 0, x: -0.8, y: 0, z: -0.8, state: "active"),
+                .init(index: 1, x: 0.8, y: 0, z: -0.8, state: "pending"),
+                .init(index: 2, x: -0.8, y: 0, z: 0.8, state: "pending"),
+                .init(index: 3, x: 0.8, y: 0, z: 0.8, state: "pending"),
+            ],
+            proposal: nil, error: nil,
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(600)),
+            rawFramesPersisted: false
+        )
+    }
+    func roomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws -> RoomPlanCalibrationSession { try await startRoomPlanCalibrationSession(homeID: homeID, cameraID: cameraID) }
+    func requestRoomPlanCalibrationCapture(homeID: UUID, cameraID: UUID, targetIndex: Int) async throws -> RoomPlanCalibrationSession { try await startRoomPlanCalibrationSession(homeID: homeID, cameraID: cameraID) }
+    func cancelRoomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws { }
     func careRecipients(homeID: UUID) async throws -> [CareRecipient] { careRecipientState.all(homeID: homeID) }
     func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient { careRecipientState.create(homeID: homeID, request: request) }
     func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient {
@@ -792,6 +816,23 @@ struct HTTPOneAPIClient: OneAPIClient {
 
     func deleteCamera(homeID: UUID, cameraID: UUID) async throws {
         let _: CameraDeleteResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)", method: "DELETE", body: nil, requiresSession: true)
+    }
+
+    func startRoomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws -> RoomPlanCalibrationSession {
+        try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)/roomplan-calibration-session", method: "POST", body: nil, requiresSession: true)
+    }
+
+    func roomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws -> RoomPlanCalibrationSession {
+        try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)/roomplan-calibration-session", method: "GET", body: nil, requiresSession: true)
+    }
+
+    func requestRoomPlanCalibrationCapture(homeID: UUID, cameraID: UUID, targetIndex: Int) async throws -> RoomPlanCalibrationSession {
+        let body = try JSONSerialization.data(withJSONObject: ["target_index": targetIndex])
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)/roomplan-calibration-session/request-capture", method: "POST", body: body, requiresSession: true)
+    }
+
+    func cancelRoomPlanCalibrationSession(homeID: UUID, cameraID: UUID) async throws {
+        let _: CameraCalibrationCancelResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/cameras/\(cameraID.oneAPIPath)/roomplan-calibration-session", method: "DELETE", body: nil, requiresSession: true)
     }
 
     func careRecipients(homeID: UUID) async throws -> [CareRecipient] {
@@ -1187,14 +1228,40 @@ private struct BackendCamera: Decodable {
     let name: String
     let roomID: String?
     let status: String
+    let calibrationNeeded: Bool?
+    let roomplanRegistrationStatus: String?
+    let roomplanMapID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, status, calibrationNeeded, roomplanRegistrationStatus
+        case roomID = "roomId"
+        case roomplanMapID = "roomplanMapId"
+    }
 
     var camera: PairedCamera? {
         guard let id = UUID(uuidString: id) else { return nil }
-        return PairedCamera(id: id, name: name, roomID: roomID.flatMap(UUID.init(uuidString:)), status: status)
+        return PairedCamera(
+            id: id,
+            name: name,
+            roomID: roomID.flatMap(UUID.init(uuidString:)),
+            status: status,
+            calibrationNeeded: calibrationNeeded ?? false,
+            roomplanRegistrationStatus: roomplanRegistrationStatus ?? "map_required",
+            roomplanMapID: roomplanMapID.flatMap(UUID.init(uuidString:))
+        )
     }
 }
 private struct CameraMutationResponse: Decodable { let id: UUID }
 private struct CameraDeleteResponse: Decodable { let id: UUID; let status: String }
+private struct CameraCalibrationCancelResponse: Decodable {
+    let cameraID: UUID
+    let status: String
+
+    private enum CodingKeys: String, CodingKey {
+        case cameraID = "cameraId"
+        case status
+    }
+}
 private struct BackendFamilyMembersResponse: Decodable { let data: [BackendFamilyMember] }
 private struct BackendFamilyMemberMutationResponse: Decodable { let data: BackendFamilyMember; let invalidatedSessions: Int }
 private struct BackendFamilyMember: Decodable {

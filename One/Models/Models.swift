@@ -308,6 +308,85 @@ struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
     let name: String
     let roomID: UUID?
     let status: String
+    let calibrationNeeded: Bool
+    let roomplanRegistrationStatus: String
+    let roomplanMapID: UUID?
+
+    init(
+        id: UUID,
+        name: String,
+        roomID: UUID?,
+        status: String,
+        calibrationNeeded: Bool = false,
+        roomplanRegistrationStatus: String = "map_required",
+        roomplanMapID: UUID? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.roomID = roomID
+        self.status = status
+        self.calibrationNeeded = calibrationNeeded
+        self.roomplanRegistrationStatus = roomplanRegistrationStatus
+        self.roomplanMapID = roomplanMapID
+    }
+}
+
+enum RoomPlanCalibrationSessionStatus: String, Codable, Sendable, Equatable {
+    case waitingForPerson = "waiting_for_person"
+    case captureRequested = "capture_requested"
+    case solving
+    case review
+    case failed
+    case expired
+}
+
+struct RoomPlanCalibrationTarget: Codable, Sendable, Equatable, Identifiable {
+    let index: Int
+    let x: Double
+    let y: Double
+    let z: Double
+    let state: String
+
+    var id: Int { index }
+}
+
+struct RoomPlanCalibrationProposal: Codable, Sendable, Equatable {
+    let id: UUID?
+    let cameraID: UUID
+    let mapID: UUID
+    let cameraToWorld: [[Double]]
+    let confidence: Double?
+    let trackingState: String?
+    let source: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case cameraID = "cameraId"
+        case mapID = "mapId"
+        case cameraToWorld, confidence, trackingState, source
+    }
+}
+
+struct RoomPlanCalibrationSession: Codable, Sendable, Equatable {
+    let sessionID: UUID
+    let cameraID: UUID
+    let mapID: UUID
+    let status: RoomPlanCalibrationSessionStatus
+    let currentTargetIndex: Int
+    let capturedTargetCount: Int
+    let targets: [RoomPlanCalibrationTarget]
+    let proposal: RoomPlanCalibrationProposal?
+    let error: String?
+    let createdAt: String
+    let expiresAt: String
+    let rawFramesPersisted: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID = "sessionId"
+        case cameraID = "cameraId"
+        case mapID = "mapId"
+        case status, currentTargetIndex, capturedTargetCount, targets, proposal, error, createdAt, expiresAt, rawFramesPersisted
+    }
 }
 
 struct CameraRoom: Identifiable, Codable, Sendable, Equatable {
