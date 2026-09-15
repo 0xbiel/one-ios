@@ -650,7 +650,7 @@ struct CameraCalibrationSheet: View {
             }
         } else if calibration == nil {
             VStack(alignment: .leading, spacing: 20) {
-                title(eyebrow: "GUIDED SETUP", title: "Walk four points. Keep the room camera still.", body: "This iPhone guides you to known LiDAR floor positions. The paired fixed camera captures the calibration frames itself, so the pose matches the camera that will actually remain in the room.")
+                title(eyebrow: "GUIDED SETUP", title: "Walk the highlighted points. Keep the room camera still.", body: "This iPhone guides you to known LiDAR floor positions. The paired fixed camera captures the calibration frames itself, so the pose matches the camera that will actually remain in the room.")
                 SurfaceCard(radius: 24) {
                     VStack(alignment: .leading, spacing: 14) {
                         requirement("Leave \(camera.name) in its final fixed position", symbol: "camera.fill")
@@ -739,7 +739,7 @@ struct CameraCalibrationSheet: View {
                     body: calibration.status == .captureRequested
                         ? "Stay on the point for a moment. The fixed camera is capturing two short frames now."
                         : calibration.status == .solving
-                            ? "All four points are captured. ONE is matching them with the RoomPlan landmark index."
+                            ? "All calibration points are captured. ONE is solving the fixed camera pose against the RoomPlan floor geometry."
                             : "Move to the amber marker, then tell ONE when you are standing there. Exact centimetres are not required."
                 )
                 CameraCalibrationFloorMap(
@@ -811,7 +811,7 @@ struct CameraCalibrationSheet: View {
                     calibrationTargets: calibration.targets
                 )
                 .frame(height: 260)
-                Text("The same four floor targets are pinned directly onto the RoomPlan model. Furniture stays visible so you can match the point to the real room before walking to it.")
+                Text("The same floor targets are pinned directly onto the RoomPlan model. Furniture stays visible so you can match each point to the real room before walking to it.")
                     .font(.footnote)
                     .foregroundStyle(OneTheme.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
@@ -867,7 +867,7 @@ struct CameraCalibrationSheet: View {
             .controlSize(.large)
             .disabled(isWorking)
         } else if calibration?.status == .failed || calibration?.status == .expired {
-            Button(isWorking ? "Restarting…" : "Run four points again") { Task { await restartCalibration() } }
+            Button(isWorking ? "Restarting…" : "Run calibration again") { Task { await restartCalibration() } }
                 .buttonStyle(.borderedProminent)
                 .tint(OneTheme.accentBlue)
                 .controlSize(.large)
