@@ -636,6 +636,37 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(day, "2026-09-15")
     }
 
+    func testLiveMedicationCheckInEncodesScheduledTimeAsISO8601() async throws {
+        let homeID = UUID()
+        let planID = UUID()
+        let scheduledAt = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-15T08:00:00Z"))
+        var capturedRequest: URLRequest?
+        OneURLProtocolStub.handler = { request in
+            capturedRequest = request
+            let body = Data("""
+            {"data":{"status":"taken","marked_by_name":"Biel","updated_at":"2026-09-15T09:30:00Z"}}
+            """.utf8)
+            return (try XCTUnwrap(HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)), body)
+        }
+        defer { OneURLProtocolStub.handler = nil }
+
+        let configuration = RuntimeConfiguration(info: ["ONE_API_BASE_URL": "https://one-api.example/api/v1"])
+        let client = HTTPOneAPIClient(configuration: configuration, accessToken: "token", homeID: homeID, session: URLSession(configuration: .oneTest))
+        try await client.recordMedicationCheckIn(
+            homeID: homeID,
+            planID: planID,
+            request: MedicationCheckInRequest(scheduledFor: scheduledAt, status: "taken")
+        )
+
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertEqual(request.url?.path, "/api/v1/homes/\(homeID.uuidString.lowercased())/medication-plans/\(planID.uuidString.lowercased())/check-ins")
+        let body = try XCTUnwrap(requestBody(request))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let encodedScheduledAt = try XCTUnwrap(payload["scheduled_for"] as? String)
+        XCTAssertEqual(ISO8601DateFormatter().date(from: encodedScheduledAt), scheduledAt)
+        XCTAssertEqual(payload["status"] as? String, "taken")
+    }
+
     func testLiveMedicationPlanCreateUsesLowercaseUUIDBodyIdentifiers() async throws {
         let homeID = UUID()
         let subjectUserID = UUID()

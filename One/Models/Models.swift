@@ -232,6 +232,7 @@ struct RoomObject: Codable, Identifiable, Sendable {
     let mapID: UUID?
     let cameraID: UUID?
     let observedAt: Date?
+    let presenceState: PersonPresenceState?
 
     init(
         id: UUID,
@@ -243,7 +244,8 @@ struct RoomObject: Codable, Identifiable, Sendable {
         zoneID: UUID,
         mapID: UUID? = nil,
         cameraID: UUID? = nil,
-        observedAt: Date? = nil
+        observedAt: Date? = nil,
+        presenceState: PersonPresenceState? = nil
     ) {
         self.id = id
         self.name = name
@@ -255,7 +257,12 @@ struct RoomObject: Codable, Identifiable, Sendable {
         self.mapID = mapID
         self.cameraID = cameraID
         self.observedAt = observedAt
+        self.presenceState = presenceState
     }
+}
+
+enum PersonPresenceState: String, Codable, Sendable {
+    case current, recent, stale
 }
 
 struct Zone: Codable, Identifiable, Sendable {
@@ -332,22 +339,12 @@ struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
 }
 
 enum RoomPlanCalibrationSessionStatus: String, Codable, Sendable, Equatable {
-    case waitingForPerson = "waiting_for_person"
+    case waitingForScene = "waiting_for_scene"
     case captureRequested = "capture_requested"
     case solving
     case review
     case failed
     case expired
-}
-
-struct RoomPlanCalibrationTarget: Codable, Sendable, Equatable, Identifiable {
-    let index: Int
-    let x: Double
-    let y: Double
-    let z: Double
-    let state: String
-
-    var id: Int { index }
 }
 
 struct RoomPlanCalibrationProposal: Codable, Sendable, Equatable {
@@ -371,21 +368,27 @@ struct RoomPlanCalibrationSession: Codable, Sendable, Equatable {
     let sessionID: UUID
     let cameraID: UUID
     let mapID: UUID
+    let mode: String
     let status: RoomPlanCalibrationSessionStatus
     let currentTargetIndex: Int
     let capturedTargetCount: Int
-    let targets: [RoomPlanCalibrationTarget]
+    let captureRoundCount: Int
     let proposal: RoomPlanCalibrationProposal?
     let error: String?
+    let solveProgress: Int?
+    let solveStage: String?
+    let solveProgressUpdatedAt: String?
     let createdAt: String
     let expiresAt: String
     let rawFramesPersisted: Bool
+    let referenceSnapshotPending: Bool
+    let referenceSnapshotAvailable: Bool
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "sessionId"
         case cameraID = "cameraId"
         case mapID = "mapId"
-        case status, currentTargetIndex, capturedTargetCount, targets, proposal, error, createdAt, expiresAt, rawFramesPersisted
+        case mode, status, currentTargetIndex, capturedTargetCount, captureRoundCount, proposal, error, solveProgress, solveStage, solveProgressUpdatedAt, createdAt, expiresAt, rawFramesPersisted, referenceSnapshotPending, referenceSnapshotAvailable
     }
 }
 
@@ -403,12 +406,59 @@ enum CameraRegistrationState: String, Codable, Sendable, Equatable {
 struct CameraRegistrationDescriptor: Codable, Sendable, Equatable {
     let status: CameraRegistrationState
     let cameraID: UUID?
+    let cameraName: String?
+    let roomID: UUID?
     let mapID: UUID?
     let coordinateFrame: String
     let cameraToWorld: [[Double]]?
     let confidence: Double?
     let trackingState: String?
     let source: String
+    let intrinsics: CameraIntrinsicsDescriptor?
+    let referenceSnapshot: CameraReferenceSnapshotDescriptor?
+
+    init(status: CameraRegistrationState, cameraID: UUID?, cameraName: String? = nil, roomID: UUID? = nil, mapID: UUID?, coordinateFrame: String, cameraToWorld: [[Double]]?, confidence: Double?, trackingState: String?, source: String, intrinsics: CameraIntrinsicsDescriptor? = nil, referenceSnapshot: CameraReferenceSnapshotDescriptor? = nil) {
+        self.status = status
+        self.cameraID = cameraID
+        self.cameraName = cameraName
+        self.roomID = roomID
+        self.mapID = mapID
+        self.coordinateFrame = coordinateFrame
+        self.cameraToWorld = cameraToWorld
+        self.confidence = confidence
+        self.trackingState = trackingState
+        self.source = source
+        self.intrinsics = intrinsics
+        self.referenceSnapshot = referenceSnapshot
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case cameraID = "cameraId"
+        case cameraName
+        case roomID = "roomId"
+        case mapID = "mapId"
+        case coordinateFrame, cameraToWorld, confidence, trackingState, source, intrinsics, referenceSnapshot
+    }
+}
+
+struct CameraIntrinsicsDescriptor: Codable, Sendable, Equatable {
+    let matrix: [[Double]]?
+    let fovDegrees: Double?
+}
+
+struct CameraReferenceSnapshotDescriptor: Codable, Sendable, Equatable {
+    let capturedAt: String?
+    let mapID: UUID?
+    let width: Int?
+    let height: Int?
+    let downloadPath: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case capturedAt
+        case mapID = "mapId"
+        case width, height, downloadPath
+    }
 }
 
 struct SceneDescriptor: Decodable, Sendable, Equatable {
@@ -424,6 +474,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
     let rescanRequired: Bool
     let coordinateFrame: String?
     let cameraRegistration: CameraRegistrationDescriptor?
+    let cameraRegistrations: [CameraRegistrationDescriptor]
     let canonicalGeometry: RoomPlanNormalizedScan?
     let geometry: RoomPlanNormalizedScan?
     let usdz: USDZAsset?
@@ -446,7 +497,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         SceneDescriptor(sceneID: nil, mapID: nil, version: 0, dimension: .twoD, source: .legacy2D, provenance: "legacy-2d", approximate: true, metricScaleKnown: false, geometryStatus: "empty", rescanRequired: true, coordinateFrame: nil, geometry: nil, usdz: nil)
     }
 
-    init(sceneID: UUID?, mapID: UUID?, version: Int, dimension: MapDimension, source: MapSource, provenance: String, approximate: Bool, metricScaleKnown: Bool, geometryStatus: String, rescanRequired: Bool, coordinateFrame: String?, cameraRegistration: CameraRegistrationDescriptor? = nil, geometry: RoomPlanNormalizedScan?, usdz: USDZAsset?) {
+    init(sceneID: UUID?, mapID: UUID?, version: Int, dimension: MapDimension, source: MapSource, provenance: String, approximate: Bool, metricScaleKnown: Bool, geometryStatus: String, rescanRequired: Bool, coordinateFrame: String?, cameraRegistration: CameraRegistrationDescriptor? = nil, cameraRegistrations: [CameraRegistrationDescriptor] = [], geometry: RoomPlanNormalizedScan?, usdz: USDZAsset?) {
         self.sceneID = sceneID
         self.mapID = mapID
         self.version = version
@@ -459,6 +510,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         self.rescanRequired = rescanRequired
         self.coordinateFrame = coordinateFrame
         self.cameraRegistration = cameraRegistration
+        self.cameraRegistrations = cameraRegistrations
         self.canonicalGeometry = geometry
         self.geometry = geometry
         self.usdz = usdz
@@ -469,7 +521,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         case mapID = "mapId"
         case version, dimension, source, provenance, approximate
         case metricScaleKnown, geometryStatus, rescanRequired
-        case coordinateFrame, cameraRegistration, canonicalGeometry, geometry, usdz
+        case coordinateFrame, cameraRegistration, cameraRegistrations, canonicalGeometry, geometry, usdz
     }
 
     init(from decoder: Decoder) throws {
@@ -486,6 +538,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         rescanRequired = try container.decodeIfPresent(Bool.self, forKey: .rescanRequired) ?? false
         coordinateFrame = try container.decodeIfPresent(String.self, forKey: .coordinateFrame)
         cameraRegistration = try? container.decode(CameraRegistrationDescriptor.self, forKey: .cameraRegistration)
+        cameraRegistrations = (try? container.decode([CameraRegistrationDescriptor].self, forKey: .cameraRegistrations)) ?? (cameraRegistration.map { [$0] } ?? [])
         canonicalGeometry = try? container.decode(RoomPlanNormalizedScan.self, forKey: .canonicalGeometry)
         geometry = canonicalGeometry ?? (try? container.decode(RoomPlanNormalizedScan.self, forKey: .geometry))
         usdz = try container.decodeIfPresent(USDZAsset.self, forKey: .usdz)

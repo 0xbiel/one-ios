@@ -34,6 +34,8 @@ struct RoomPlanVisualCaptureDiagnostics: Sendable, Equatable {
     let capturedSampleCount: Int
     let depthSampleCount: Int
     let lastTrackingState: String
+    let estimatedAreaSquareMeters: Double?
+    let recommendedVisualSampleCount: Int
 }
 
 struct RoomPlanVisualSample: Sendable {
@@ -50,12 +52,13 @@ struct RoomPlanVisualSample: Sendable {
 
 struct RoomPlanCaptureView: UIViewRepresentable {
     @Binding var isCapturing: Bool
+    let arSession: ARSession
     var onComplete: @MainActor @Sendable (Result<RoomPlanCaptureResult, RoomPlanCaptureError>) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onComplete: onComplete) }
 
     func makeUIView(context: Context) -> RoomCaptureView {
-        let view = RoomCaptureView(frame: .zero)
+        let view = RoomCaptureView(frame: .zero, arSession: arSession)
         view.captureSession.delegate = context.coordinator
         return view
     }
@@ -74,12 +77,12 @@ struct RoomPlanCaptureView: UIViewRepresentable {
         guard context.coordinator.hasStarted, !context.coordinator.hasStopped else { return }
         context.coordinator.hasStopped = true
         context.coordinator.stopVisualSampling()
-        view.captureSession.stop()
+        view.captureSession.stop(pauseARSession: false)
     }
 
     static func dismantleUIView(_ view: RoomCaptureView, coordinator: Coordinator) {
         coordinator.stopVisualSampling()
-        view.captureSession.stop()
+        view.captureSession.stop(pauseARSession: false)
     }
 
     final class Coordinator: NSObject, RoomCaptureSessionDelegate {
@@ -91,9 +94,12 @@ struct RoomPlanCaptureView: UIViewRepresentable {
         private var visualSamplingSession: RoomCaptureSession?
         private var visualSamplingTimer: DispatchSourceTimer?
         private let imageContext = CIContext(options: [.cacheIntermediates: false])
-        private let maxBufferedVisualSamples = 24
-        private let maxUploadedVisualSamples = 12
-        private let visualSampleInterval: TimeInterval = 0.8
+        // Keep a large temporal reservoir, then choose the final number of
+        // viewpoints from the measured RoomPlan footprint when the scan ends.
+        // This lets a large room contribute more landmarks without retaining
+        // an unbounded stream of RGB + LiDAR buffers on the phone.
+        private let maxBufferedVisualSamples = 192
+        private let visualSampleInterval: TimeInterval = 0.5
         private var samplingAttempts = 0
         private var missingFrameCount = 0
         private var imageEncodingFailureCount = 0
@@ -157,8 +163,11 @@ struct RoomPlanCaptureView: UIViewRepresentable {
             guard sourceWidth > 0, sourceHeight > 0 else { return }
 
             let image = CIImage(cvPixelBuffer: capturedImage)
+            // Keep enough high-frequency texture for the local SIFT descriptor
+            // index. The bytes remain transient and the backend still applies
+            // its bounded frame-size contract before decoding them.
             guard let cgImage = imageContext.createCGImage(image, from: image.extent),
-                  let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.55) else {
+                  let jpegData = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.82) else {
                 imageEncodingFailureCount += 1
                 return
             }
@@ -207,6 +216,60 @@ struct RoomPlanCaptureView: UIViewRepresentable {
             }
         }
 
+        private struct VisualSamplePlan {
+            let targetCount: Int
+            let estimatedAreaSquareMeters: Double?
+        }
+
+        private static func visualSamplePlan(for room: CapturedRoom) -> VisualSamplePlan {
+            let minimumSamples = 32
+            let maximumSamples = 120
+            guard let normalized = try? RoomPlanNormalizer.normalize(room) else {
+                return VisualSamplePlan(targetCount: minimumSamples, estimatedAreaSquareMeters: nil)
+            }
+
+            let surfaces = normalized.walls + normalized.floors + normalized.openings + normalized.doors + normalized.windows
+            let points = surfaces.flatMap(\.vertices)
+            let xValues = points.map(\.x)
+            let zValues = points.map(\.z)
+            let boundsArea: Double
+            if let minX = xValues.min(), let maxX = xValues.max(), let minZ = zValues.min(), let maxZ = zValues.max() {
+                boundsArea = max(0, (maxX - minX) * (maxZ - minZ))
+            } else {
+                boundsArea = 0
+            }
+
+            func polygonArea(_ polygon: [RoomPlanPoint3D]) -> Double {
+                guard polygon.count >= 3 else { return 0 }
+                var area = 0.0
+                for index in polygon.indices {
+                    let next = polygon[(index + 1) % polygon.count]
+                    area += polygon[index].x * next.z - next.x * polygon[index].z
+                }
+                return abs(area) * 0.5
+            }
+
+            let floorArea = normalized.floors.reduce(0.0) { partial, floor in
+                partial + polygonArea(floor.vertices)
+            }
+            let area = max(floorArea, boundsArea)
+            let wallLength = normalized.walls.reduce(0.0) { partial, wall in
+                let wallX = wall.vertices.map(\.x)
+                let wallZ = wall.vertices.map(\.z)
+                guard let minX = wallX.min(), let maxX = wallX.max(), let minZ = wallZ.min(), let maxZ = wallZ.max() else {
+                    return partial
+                }
+                return partial + max(maxX - minX, maxZ - minZ)
+            }
+            let complexity = Double(max(0, normalized.walls.count - 4)) * 2.0
+                + Double(max(0, normalized.objects.count - 8)) * 0.75
+            let target = min(
+                maximumSamples,
+                max(minimumSamples, Int(ceil(24.0 + area * 1.25 + wallLength * 0.35 + complexity)))
+            )
+            return VisualSamplePlan(targetCount: target, estimatedAreaSquareMeters: area > 0 ? area : nil)
+        }
+
         private static func float32DepthData(_ pixelBuffer: CVPixelBuffer) -> Data? {
             guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_DepthFloat32 else { return nil }
             CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -233,16 +296,12 @@ struct RoomPlanCaptureView: UIViewRepresentable {
             if let frame { captureVisualSample(from: frame, force: true) }
             stopVisualSampling()
             let cameraToWorld = frame?.camera.transform
-            let completedVisualSamples = Self.evenlySpacedSamples(visualSamples, limit: maxUploadedVisualSamples)
-            let diagnostics = RoomPlanVisualCaptureDiagnostics(
-                samplingAttempts: samplingAttempts,
-                missingFrameCount: missingFrameCount,
-                imageEncodingFailureCount: imageEncodingFailureCount,
-                invalidMatrixCount: invalidMatrixCount,
-                capturedSampleCount: completedVisualSamples.count,
-                depthSampleCount: completedVisualSamples.filter { $0.depthData != nil }.count,
-                lastTrackingState: lastTrackingState
-            )
+            let bufferedVisualSamples = visualSamples
+            let sampleAttempts = samplingAttempts
+            let sampleMissingFrameCount = missingFrameCount
+            let sampleImageEncodingFailureCount = imageEncodingFailureCount
+            let sampleInvalidMatrixCount = invalidMatrixCount
+            let sampleLastTrackingState = lastTrackingState
             let trackingState: String
             switch frame?.camera.trackingState {
             case .normal: trackingState = "normal"
@@ -257,6 +316,19 @@ struct RoomPlanCaptureView: UIViewRepresentable {
                 }
                 do {
                     let room = try await RoomBuilder(options: []).capturedRoom(from: capturedData)
+                    let plan = Self.visualSamplePlan(for: room)
+                    let completedVisualSamples = Self.evenlySpacedSamples(bufferedVisualSamples, limit: plan.targetCount)
+                    let diagnostics = RoomPlanVisualCaptureDiagnostics(
+                        samplingAttempts: sampleAttempts,
+                        missingFrameCount: sampleMissingFrameCount,
+                        imageEncodingFailureCount: sampleImageEncodingFailureCount,
+                        invalidMatrixCount: sampleInvalidMatrixCount,
+                        capturedSampleCount: completedVisualSamples.count,
+                        depthSampleCount: completedVisualSamples.filter { $0.depthData != nil }.count,
+                        lastTrackingState: sampleLastTrackingState,
+                        estimatedAreaSquareMeters: plan.estimatedAreaSquareMeters,
+                        recommendedVisualSampleCount: plan.targetCount
+                    )
                     completion(.success(RoomPlanCaptureResult(room: room, cameraToWorld: cameraToWorld, trackingState: trackingState, visualSamples: completedVisualSamples, visualDiagnostics: diagnostics)))
                 } catch {
                     completion(.failure(.captureFailed(error.localizedDescription)))

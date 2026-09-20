@@ -392,9 +392,9 @@ private struct CameraManagerRow: View {
                     .font(.subheadline)
                     .foregroundStyle(OneTheme.secondaryInk)
                 if camera.calibrationNeeded {
-                    Label("Calibration needed", systemImage: "scope")
+                    Label("3D position not set", systemImage: "camera.viewfinder")
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(OneTheme.amber)
+                        .foregroundStyle(OneTheme.secondaryInk)
                 }
             }
             Spacer(minLength: 8)
@@ -453,24 +453,30 @@ private struct CameraEditorSheet: View {
                     if camera.roomplanMapID != nil {
                         HStack {
                             Label(
-                                camera.calibrationNeeded ? "Calibration needed" : "Camera positioned",
-                                systemImage: camera.calibrationNeeded ? "scope" : "camera.viewfinder"
+                                camera.calibrationNeeded ? "3D position not set" : "Camera positioned",
+                                systemImage: "camera.viewfinder"
                             )
-                            .foregroundStyle(camera.calibrationNeeded ? OneTheme.amber : OneTheme.accentBlue)
+                            .foregroundStyle(camera.calibrationNeeded ? OneTheme.secondaryInk : OneTheme.accentBlue)
                             Spacer()
-                            Button(camera.calibrationNeeded ? "Calibrate" : "Recalibrate") {
-                                showCalibration = true
+                            Menu {
+                                Button {
+                                    showCalibration = true
+                                } label: {
+                                    Label(camera.calibrationNeeded ? "Calibrate camera" : "Run calibration again", systemImage: "camera.viewfinder")
+                                }
+                            } label: {
+                                Label("Positioning", systemImage: "ellipsis.circle")
                             }
                             .font(.subheadline.weight(.semibold))
                         }
+                        Text("Positioning runs only when you choose it here. A failed or unwanted proposal never replaces the saved camera position.")
+                            .font(.footnote)
+                            .foregroundStyle(OneTheme.secondaryInk)
                     } else {
                         Label("Scan the room with LiDAR before positioning this camera.", systemImage: "viewfinder")
                             .font(.footnote)
                             .foregroundStyle(OneTheme.secondaryInk)
                     }
-                    Text("Changing the room or camera details can require camera positioning to be refreshed on the map.")
-                        .font(.footnote)
-                        .foregroundStyle(OneTheme.secondaryInk)
                 }
 
                 if let error = store.cameraPairingError, !error.isEmpty {
@@ -524,12 +530,9 @@ struct CameraCalibrationSheet: View {
     @State private var manualHeight = 1.25
     @State private var manualYaw = 0.0
     @State private var saved = false
+    @State private var lastRequestedRound: Int?
 
     private var scan: RoomPlanNormalizedScan? { store.scene.canonicalGeometry ?? store.scene.geometry }
-    private var currentTarget: RoomPlanCalibrationTarget? {
-        guard let calibration else { return nil }
-        return calibration.targets.first(where: { $0.index == calibration.currentTargetIndex })
-    }
     private var proposalPoint: SIMD2<Double>? {
         guard let matrix = calibration?.proposal?.cameraToWorld,
               matrix.count == 4,
@@ -604,6 +607,11 @@ struct CameraCalibrationSheet: View {
                     if refreshed.status == .review, manualPoint == nil {
                         manualPoint = proposalPoint ?? defaultMapPoint
                     }
+                    if refreshed.status == .waitingForScene,
+                       refreshed.currentTargetIndex < refreshed.captureRoundCount,
+                       lastRequestedRound != refreshed.currentTargetIndex {
+                        await requestCurrentCapture()
+                    }
                 }
             }
         }
@@ -650,31 +658,30 @@ struct CameraCalibrationSheet: View {
             }
         } else if calibration == nil {
             VStack(alignment: .leading, spacing: 20) {
-                title(eyebrow: "GUIDED SETUP", title: "Walk the highlighted points. Keep the room camera still.", body: "This iPhone guides you to known LiDAR floor positions. The paired fixed camera captures the calibration frames itself, so the pose matches the camera that will actually remain in the room.")
+                title(eyebrow: "CAMERA POSITION", title: "Calibrate this fixed camera when you are ready.", body: "ONE will request three short reference bursts from the paired camera, solve its position against the RoomPlan scan, and show you the result before anything is saved.")
                 SurfaceCard(radius: 24) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        requirement("Leave \(camera.name) in its final fixed position", symbol: "camera.fill")
-                        requirement("Keep its browser camera preview open", symbol: "macbook.and.iphone")
-                        requirement("Stand briefly on each highlighted floor point", symbol: "figure.stand")
-                        requirement("Other people may stay in frame", symbol: "person.2.fill")
+                    VStack(alignment: .leading, spacing: 12) {
+                        requirement("Keep \(camera.name) in its final position with its preview open", symbol: "camera.fill")
+                        requirement("Three reference bursts run automatically after you tap Start", symbol: "camera.viewfinder")
+                        requirement("People and movable chairs are ignored as calibration anchors", symbol: "person.2.fill")
                     }
                     .padding(18)
                 }
-                Text("Calibration images are held only for this short session and are not saved as room media.")
+                Text("Reference frames stay temporary. The proposed position is review-only until you explicitly save it, and you can run calibration again whenever you want.")
                     .font(.footnote)
                     .foregroundStyle(OneTheme.secondaryInk)
             }
         } else if calibration?.status == .review, !manualMode {
             VStack(alignment: .leading, spacing: 18) {
-                title(eyebrow: "REVIEW", title: "Check the camera placement.", body: "The dark camera marker is ONE’s proposed fixed-camera position. Save it only if it matches where the camera really is.")
+                title(eyebrow: "REVIEW", title: "Check the camera placement.", body: "The camera marker is ONE’s proposed fixed-camera position. Save it only if it matches where the camera really is.")
                 CameraCalibrationFloorMap(
                     scan: scan,
-                    targets: calibration?.targets ?? [],
                     cameraPoint: proposalPoint,
                     selection: nil,
                     onSelect: nil
                 )
                 .frame(height: 320)
+                calibration3DGuide(calibration!)
                 if let confidence = calibration?.proposal?.confidence {
                     Label("Automatic placement confidence \(Int((confidence * 100).rounded()))%", systemImage: "scope")
                         .font(.subheadline.weight(.semibold))
@@ -689,12 +696,11 @@ struct CameraCalibrationSheet: View {
                 }
                 .buttonStyle(.bordered)
             }
-        } else if manualMode, let calibration {
+        } else if manualMode, calibration != nil {
             VStack(alignment: .leading, spacing: 18) {
                 title(eyebrow: "MANUAL POSITION", title: "Tap where the camera really is.", body: "Place the marker on the floor plan, then set its mounting height and viewing direction before saving.")
                 CameraCalibrationFloorMap(
                     scan: scan,
-                    targets: calibration.targets,
                     cameraPoint: nil,
                     selection: manualPoint,
                     onSelect: { manualPoint = $0 }
@@ -722,7 +728,14 @@ struct CameraCalibrationSheet: View {
             }
         } else if let calibration, calibration.status == .failed || calibration.status == .expired {
             VStack(alignment: .leading, spacing: 18) {
-                title(eyebrow: "TRY AGAIN", title: "The camera position needs another pass.", body: calibration.error ?? "The temporary calibration session expired or did not produce a stable pose.")
+                let calibrationError = calibration.error ?? ""
+                let localizationServiceUnavailable = calibrationError.localizedCaseInsensitiveContains("local camera localization service")
+                    || calibrationError.localizedCaseInsensitiveContains("local room-layout service")
+                title(
+                    eyebrow: localizationServiceUnavailable ? "SERVICE UNAVAILABLE" : "TRY AGAIN",
+                    title: localizationServiceUnavailable ? "The camera position was not changed." : "The camera position needs another pass.",
+                    body: calibration.error ?? "The temporary calibration session expired or did not produce a stable pose."
+                )
                 SurfaceCard(radius: 22) {
                     Label("The existing camera position was not replaced.", systemImage: "lock.shield.fill")
                         .font(.subheadline.weight(.semibold))
@@ -732,41 +745,56 @@ struct CameraCalibrationSheet: View {
             }
         } else if let calibration {
             VStack(alignment: .leading, spacing: 18) {
-                let number = min(calibration.currentTargetIndex + 1, calibration.targets.count)
+                let number = min(calibration.currentTargetIndex + 1, calibration.captureRoundCount)
+                let solveProgress = max(1, min(100, calibration.solveProgress ?? 1))
                 title(
-                    eyebrow: calibration.status == .solving ? "SOLVING" : "POINT \(number) OF \(calibration.targets.count)",
-                    title: calibration.status == .solving ? "Finding the fixed camera in 3D." : "Stand on the highlighted point.",
+                    eyebrow: calibration.status == .solving ? "MATCHING FIXED VIEW" : "REFERENCE \(number) OF \(calibration.captureRoundCount)",
+                    title: calibration.status == .solving ? "Matching the fixed view to RoomPlan…" : "Capturing the fixed view.",
                     body: calibration.status == .captureRequested
-                        ? "Stay on the point for a moment. The fixed camera is capturing two short frames now."
+                        ? "Keep the room camera still. ONE is capturing this reference burst now."
                         : calibration.status == .solving
-                            ? "All calibration points are captured. ONE is solving the fixed camera pose against the RoomPlan floor geometry."
-                            : "Move to the amber marker, then tell ONE when you are standing there. Exact centimetres are not required."
+                            ? "\(calibration.solveStage ?? "Local feature matching and PnP are estimating the 3D pose.") Keep the camera still."
+                            : "The next reference burst will start automatically. You do not need to stand anywhere, and people or chairs may move through the frame."
                 )
-                CameraCalibrationFloorMap(
-                    scan: scan,
-                    targets: calibration.targets,
-                    cameraPoint: nil,
-                    selection: nil,
-                    onSelect: nil
-                )
-                .frame(height: 320)
-                calibration3DGuide(calibration)
-                if let target = currentTarget, calibration.status != .solving {
-                    HStack(spacing: 10) {
-                        metric("X", value: target.x)
-                        metric("Z", value: target.z)
-                        metric("DONE", text: "\(calibration.capturedTargetCount)/\(calibration.targets.count)")
+                SurfaceCard(radius: 22) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 8) {
+                            ForEach(0..<calibration.captureRoundCount, id: \.self) { index in
+                                Capsule()
+                                    .fill(index < calibration.capturedTargetCount ? OneTheme.mint : index == calibration.currentTargetIndex ? OneTheme.accentBlue : OneTheme.controlFill)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 7)
+                            }
+                        }
+                        Text(calibration.status == .solving ? "All reference bursts captured" : "\(calibration.capturedTargetCount) of \(calibration.captureRoundCount) captured")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(OneTheme.secondaryInk)
                     }
+                    .padding(16)
                 }
-                if calibration.status == .captureRequested || calibration.status == .solving {
+                if calibration.status == .solving {
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack {
+                            Text(calibration.solveStage ?? "Matching locally…")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(OneTheme.secondaryInk)
+                            Spacer()
+                            Text("\(solveProgress)%")
+                                .font(.subheadline.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(OneTheme.accentBlue)
+                        }
+                        ProgressView(value: Double(solveProgress), total: 100)
+                            .tint(OneTheme.accentBlue)
+                    }
+                } else if calibration.status == .captureRequested {
                     HStack(spacing: 10) {
                         ProgressView().tint(OneTheme.accentBlue)
-                        Text(calibration.status == .solving ? "Solving locally…" : "Waiting for \(camera.name)…")
+                        Text("Waiting for \(camera.name)…")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(OneTheme.secondaryInk)
                     }
                 }
-                if calibration.status == .waitingForPerson, let message = calibration.error, !message.isEmpty {
+                if calibration.status == .waitingForScene, let message = calibration.error, !message.isEmpty {
                     Label(message, systemImage: "camera.viewfinder")
                         .font(.footnote)
                         .foregroundStyle(OneTheme.amber)
@@ -807,11 +835,10 @@ struct CameraCalibrationSheet: View {
                     url: url,
                     mapID: calibration.mapID,
                     cameraRegistration: nil,
-                    objects: [],
-                    calibrationTargets: calibration.targets
+                    objects: []
                 )
                 .frame(height: 260)
-                Text("The same floor targets are pinned directly onto the RoomPlan model. Furniture stays visible so you can match each point to the real room before walking to it.")
+                Text("This is the RoomPlan model the fixed camera is being matched against. Stable room structure and visual landmarks drive the solve; people and movable chairs are not trusted as anchors.")
                     .font(.footnote)
                     .foregroundStyle(OneTheme.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
@@ -872,24 +899,15 @@ struct CameraCalibrationSheet: View {
                 .tint(OneTheme.accentBlue)
                 .controlSize(.large)
                 .disabled(isWorking)
-        } else if let calibration, calibration.status == .waitingForPerson {
-            Button {
-                Task { await requestCurrentCapture() }
-            } label: {
-                VStack(spacing: 2) {
-                    Text(isWorking ? "Requesting capture…" : "Continue")
-                        .font(.headline)
-                    if !isWorking {
-                        Text("I’m standing on point \(calibration.currentTargetIndex + 1)")
-                            .font(.caption)
-                    }
-                }
-                .frame(maxWidth: .infinity)
+        } else if calibration?.status == .waitingForScene {
+            HStack(spacing: 10) {
+                ProgressView().tint(OneTheme.accentBlue)
+                Text("Preparing next reference…")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(OneTheme.secondaryInk)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(OneTheme.accentBlue)
-            .controlSize(.large)
-            .disabled(isWorking)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
         } else if calibration?.status == .captureRequested {
             Button(isWorking ? "Retrying capture…" : "Retry fixed-camera capture") {
                 Task { await requestCurrentCapture() }
@@ -910,6 +928,7 @@ struct CameraCalibrationSheet: View {
             for: camera,
             targetIndex: calibration.currentTargetIndex
         ) {
+            lastRequestedRound = calibration.currentTargetIndex
             self.calibration = updated
         }
         isWorking = false
@@ -919,8 +938,12 @@ struct CameraCalibrationSheet: View {
         isWorking = true
         manualMode = false
         manualPoint = nil
+        lastRequestedRound = nil
         calibration = await store.startRoomPlanCalibration(for: camera)
         isWorking = false
+        if calibration?.status == .waitingForScene {
+            await requestCurrentCapture()
+        }
     }
 
     private func restartCalibration() async {
@@ -928,8 +951,12 @@ struct CameraCalibrationSheet: View {
         await store.cancelRoomPlanCalibration(for: camera)
         manualMode = false
         manualPoint = nil
+        lastRequestedRound = nil
         calibration = await store.startRoomPlanCalibration(for: camera)
         isWorking = false
+        if calibration?.status == .waitingForScene {
+            await requestCurrentCapture()
+        }
     }
 
     private func title(eyebrow: String, title: String, body: String) -> some View {
@@ -959,10 +986,6 @@ struct CameraCalibrationSheet: View {
         }
     }
 
-    private func metric(_ label: String, value: Double) -> some View {
-        metric(label, text: String(format: "%.2f m", value))
-    }
-
     private func metric(_ label: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption2.weight(.bold)).foregroundStyle(OneTheme.secondaryInk)
@@ -976,7 +999,6 @@ struct CameraCalibrationSheet: View {
 
 private struct CameraCalibrationFloorMap: View {
     let scan: RoomPlanNormalizedScan?
-    let targets: [RoomPlanCalibrationTarget]
     let cameraPoint: SIMD2<Double>?
     let selection: SIMD2<Double>?
     let onSelect: ((SIMD2<Double>) -> Void)?
@@ -1051,7 +1073,6 @@ private struct CameraCalibrationFloorMap: View {
         var points = floorPolygons.flatMap { $0 }
         points.append(contentsOf: objectPolygons.flatMap { $0 })
         points.append(contentsOf: wallSegments.flatMap { [$0.0, $0.1] })
-        points.append(contentsOf: targets.map { SIMD2($0.x, $0.z) })
         if let cameraPoint { points.append(cameraPoint) }
         if let selection { points.append(selection) }
         guard !points.isEmpty else { return (-1, 1, -1, 1) }
@@ -1091,13 +1112,6 @@ private struct CameraCalibrationFloorMap: View {
                         path.closeSubpath()
                         context.fill(path, with: .color(Color(red: 0.77, green: 0.82, blue: 0.86).opacity(0.88)))
                         context.stroke(path, with: .color(Color(red: 0.25, green: 0.39, blue: 0.50).opacity(0.75)), lineWidth: 1.25)
-                    }
-                    for target in targets {
-                        let point = screenPoint(SIMD2(target.x, target.z), size: size)
-                        let color: Color = target.state == "complete" ? OneTheme.accentCyan : (target.state == "active" ? OneTheme.amber : OneTheme.secondaryInk.opacity(0.55))
-                        let circle = Path(ellipseIn: CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18))
-                        context.fill(circle, with: .color(color))
-                        context.stroke(circle, with: .color(.white), lineWidth: 2)
                     }
                     if let cameraPoint {
                         let point = screenPoint(cameraPoint, size: size)
@@ -1397,7 +1411,7 @@ private struct CameraPairingSheet: View {
                 .padding(.top, 7)
 
             Text(isConnected
-                 ? "ONE confirmed the publisher connection. The camera now appears with your other connected devices, and viewing remains consent-based."
+                 ? "ONE confirmed the publisher connection. The camera is ready for live view. 3D positioning stays optional and can be started later from this camera's Positioning menu."
                  : "Keep this sheet open while you enter the code on the phone or laptop that will stay in the room. ONE checks the connection automatically.")
                 .font(.body)
                 .foregroundStyle(OneTheme.secondaryInk)

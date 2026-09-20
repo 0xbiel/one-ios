@@ -160,6 +160,31 @@ struct RoomPlanScanMetadata: Codable, Sendable, Equatable {
     var visualSampleCount: Int? = nil
     var visualDepthSampleCount: Int? = nil
     var visualLastTrackingState: String? = nil
+    var visualRecommendedSampleCount: Int? = nil
+    var visualEstimatedAreaSquareMeters: Double? = nil
+}
+
+struct RoomPlanVisualLandmarkUploadProgress: Sendable, Equatable {
+    var mapID: UUID?
+    var phase: String
+    var completedFrameCount: Int
+    let totalFrameCount: Int
+    var failedFrameCount: Int
+    var currentBatch: Int
+    var batchCount: Int
+    var retryAttempt: Int
+    var lastError: String?
+
+    var percent: Int {
+        guard totalFrameCount > 0 else { return 0 }
+        return min(100, max(0, Int((Double(completedFrameCount) / Double(totalFrameCount) * 100.0).rounded())))
+    }
+}
+
+struct RoomPlanSaveProgress: Sendable, Equatable {
+    var phase: String
+    var percent: Int
+    var detail: String
 }
 
 struct ARVideoPoint3D: Codable, Sendable, Equatable {
@@ -366,12 +391,39 @@ enum RoomPlanNormalizer {
         return try normalize(fixture)
     }
 
+    static func normalize(_ structure: CapturedStructure, capturedAt: Date = Date()) throws -> RoomPlanNormalizedScan {
+        let fixture = RoomPlanCaptureFixture(
+            roomID: nil,
+            capturedAt: capturedAt,
+            walls: try structure.walls.map { try input(from: $0) },
+            floors: try structure.floors.map { try input(from: $0) },
+            openings: try structure.openings.map { try input(from: $0) },
+            doors: try structure.doors.map { try input(from: $0) },
+            windows: try structure.windows.map { try input(from: $0) },
+            objects: try structure.objects.map { try input(from: $0) },
+            sections: structure.sections.map { RoomPlanSectionInput(label: $0.label.rawValue, center: $0.center, story: $0.story) }
+        )
+        return try normalize(fixture)
+    }
+
     static func metadata(for room: CapturedRoom) -> RoomPlanScanMetadata {
         RoomPlanScanMetadata(
             provenance: "native-roomplan",
             deviceModel: deviceModel,
             lidar: true,
             roomplanVersion: String(room.version),
+            units: "m",
+            upAxis: "Y",
+            geometryType: "3d"
+        )
+    }
+
+    static func metadata(for structure: CapturedStructure) -> RoomPlanScanMetadata {
+        RoomPlanScanMetadata(
+            provenance: "native-roomplan-structure",
+            deviceModel: deviceModel,
+            lidar: true,
+            roomplanVersion: String(structure.version),
             units: "m",
             upAxis: "Y",
             geometryType: "3d"
@@ -463,6 +515,23 @@ struct NativeRoomPlanArtifact: Sendable {
 }
 
 enum RoomPlanArtifactBuilder {
+    static func build(from structure: CapturedStructure, capturedAt: Date = Date()) throws -> NativeRoomPlanArtifact {
+        let scan = try RoomPlanNormalizer.normalize(structure, capturedAt: capturedAt)
+        let metadata = RoomPlanNormalizer.metadata(for: structure)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("one-roomplan-structure-\(structure.identifier.uuidString).usdz")
+        defer { try? FileManager.default.removeItem(at: url) }
+        do {
+            try structure.export(to: url, exportOptions: .model)
+            let data = try Data(contentsOf: url)
+            guard !data.isEmpty else { throw RoomPlanNormalizationError.exportFailed }
+            return NativeRoomPlanArtifact(scan: scan, metadata: metadata, usdzData: data)
+        } catch let error as RoomPlanNormalizationError {
+            throw error
+        } catch {
+            throw RoomPlanNormalizationError.exportFailed
+        }
+    }
+
     static func build(from room: CapturedRoom, capturedAt: Date = Date()) throws -> NativeRoomPlanArtifact {
         let scan = try RoomPlanNormalizer.normalize(room, capturedAt: capturedAt)
         let metadata = RoomPlanNormalizer.metadata(for: room)

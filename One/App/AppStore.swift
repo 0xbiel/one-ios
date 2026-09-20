@@ -64,6 +64,8 @@ final class AppStore {
     var scene: SceneDescriptor = .empty
     var roomPlanModelURL: URL?
     var isRoomPlanUploading = false
+    var roomPlanVisualUploadProgress: RoomPlanVisualLandmarkUploadProgress?
+    var roomPlanSaveProgress: RoomPlanSaveProgress?
     var isRoomPlanModelLoading = false
     var roomPlanModelError: String?
     var careRecipients: [CareRecipient] = []
@@ -72,6 +74,8 @@ final class AppStore {
     var careRecipientError: String?
     var pairedCameras: [PairedCamera] = []
     var cameraRooms: [CameraRoom] = []
+    var isRoomMutating = false
+    var roomError: String?
     var cameraCount = 0
     var cameraPairingChallenge: CameraPairingChallenge?
     var cameraPairingStatus: CameraPairingStatus?
@@ -79,12 +83,24 @@ final class AppStore {
     var isCameraMutating = false
     var cameraPairingError: String?
     var cameraCalibrationError: String?
+    var cameraReferenceCaptureError: String?
+    var cameraReferenceImages: [UUID: Data] = [:]
     private var pendingCameraRoomID: UUID?
     private var pendingRoomPlanMapID: UUID?
     private var pendingRoomPlanUSDZData: Data?
+    private struct PendingRoomPlanVisualUpload {
+        let mapID: UUID
+        let samples: [RoomPlanVisualSample]
+    }
+    private var pendingRoomPlanVisualUpload: PendingRoomPlanVisualUpload?
     private var roomPlanModelMapID: UUID?
+    private var cameraReferenceCaptureKeys: [UUID: String] = [:]
     private let sessionStore: any SessionKeyStore
     let runtimeConfiguration: RuntimeConfiguration
+
+    var canRetryRoomPlanVisualLandmarks: Bool {
+        pendingRoomPlanVisualUpload != nil && !isRoomPlanUploading
+    }
 
     init(events: [ObservedEvent], scan: RoomScan, consents: [ConsentRecord], caregivers: [CaregiverAccount] = [], careRecipients: [CareRecipient] = [], medicationDoses: [MedicationDose] = [], medicationPlans: [MedicationPlan] = [], careSpaces: [CareSpaceSummary] = [], apiClient: any OneAPIClient = MockOneAPIClient(), backendState: BackendConnectionState = .demo, session: AuthSession? = nil, sessionStore: any SessionKeyStore = KeychainSessionStore(), runtimeConfiguration: RuntimeConfiguration = RuntimeConfiguration()) {
         self.events = events; self.scan = scan; self.consents = consents
@@ -970,6 +986,94 @@ final class AppStore {
         }
     }
 
+    func createRoom(name: String) async -> Bool {
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard !trimmed.isEmpty else {
+            roomError = "Room name cannot be empty."
+            return false
+        }
+        if runtimeConfiguration.isDemoMode {
+            cameraRooms.append(CameraRoom(id: UUID(), name: trimmed))
+            roomError = nil
+            return true
+        }
+        guard let session else {
+            roomError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        isRoomMutating = true
+        roomError = nil
+        defer { isRoomMutating = false }
+        do {
+            let room = try await apiClient.createRoom(homeID: session.homeID, name: trimmed)
+            cameraRooms.append(room)
+            return true
+        } catch {
+            roomError = (error as? LocalizedError)?.errorDescription ?? "Could not create this room."
+            return false
+        }
+    }
+
+    func renameRoom(_ room: CameraRoom, name: String) async -> Bool {
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard !trimmed.isEmpty else {
+            roomError = "Room name cannot be empty."
+            return false
+        }
+        if runtimeConfiguration.isDemoMode {
+            if let index = cameraRooms.firstIndex(where: { $0.id == room.id }) {
+                cameraRooms[index] = CameraRoom(id: room.id, name: trimmed)
+            }
+            roomError = nil
+            return true
+        }
+        guard let session else {
+            roomError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        isRoomMutating = true
+        roomError = nil
+        defer { isRoomMutating = false }
+        do {
+            let updated = try await apiClient.updateRoom(homeID: session.homeID, roomID: room.id, name: trimmed)
+            if let index = cameraRooms.firstIndex(where: { $0.id == room.id }) { cameraRooms[index] = updated }
+            return true
+        } catch {
+            roomError = (error as? LocalizedError)?.errorDescription ?? "Could not rename this room."
+            return false
+        }
+    }
+
+    func deleteRoom(_ room: CameraRoom) async -> Bool {
+        if runtimeConfiguration.isDemoMode {
+            cameraRooms.removeAll { $0.id == room.id }
+            pairedCameras = pairedCameras.map { camera in
+                guard camera.roomID == room.id else { return camera }
+                return PairedCamera(id: camera.id, name: camera.name, roomID: nil, status: camera.status, calibrationNeeded: camera.calibrationNeeded, roomplanRegistrationStatus: camera.roomplanRegistrationStatus, roomplanMapID: camera.roomplanMapID)
+            }
+            roomError = nil
+            return true
+        }
+        guard let session else {
+            roomError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        isRoomMutating = true
+        roomError = nil
+        defer { isRoomMutating = false }
+        do {
+            try await apiClient.deleteRoom(homeID: session.homeID, roomID: room.id)
+            cameraRooms.removeAll { $0.id == room.id }
+            pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
+            cameraCount = pairedCameras.count
+            await refreshScene()
+            return true
+        } catch {
+            roomError = (error as? LocalizedError)?.errorDescription ?? "Could not delete this room."
+            return false
+        }
+    }
+
     func startRoomPlanCalibration(for camera: PairedCamera) async -> RoomPlanCalibrationSession? {
         guard let session else {
             cameraCalibrationError = OneAPIError.missingSession.localizedDescription
@@ -1024,12 +1128,32 @@ final class AppStore {
                     trackingState: "normal"
                 )
             )
-            cameraCalibrationError = nil
+            do {
+                try await apiClient.commitRoomPlanCalibrationReference(homeID: session.homeID, cameraID: camera.id)
+                cameraCalibrationError = nil
+            } catch {
+                cameraCalibrationError = "The camera position was saved, but its reference image could not be stored. You can refresh the reference view later."
+            }
             await refreshCameraConfiguration()
             await refreshScene()
             return true
         } catch {
             cameraCalibrationError = (error as? LocalizedError)?.errorDescription ?? "Could not save the reviewed camera position."
+            return false
+        }
+    }
+
+    func requestCameraReferenceCapture(_ cameraID: UUID) async -> Bool {
+        guard let session else {
+            cameraReferenceCaptureError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        cameraReferenceCaptureError = nil
+        do {
+            try await apiClient.requestCameraReferenceCapture(homeID: session.homeID, cameraID: cameraID)
+            return true
+        } catch {
+            cameraReferenceCaptureError = (error as? LocalizedError)?.errorDescription ?? "Could not request a fresh camera reference view."
             return false
         }
     }
@@ -1221,6 +1345,7 @@ final class AppStore {
         guard !runtimeConfiguration.isDemoMode, let session else { return }
         do {
             scene = try await apiClient.refreshScene(homeID: session.homeID)
+            await refreshCameraReferenceImages(homeID: session.homeID)
             if scene.isRenderable3D {
                 await loadRoomPlanModelIfAvailable()
             } else {
@@ -1234,7 +1359,89 @@ final class AppStore {
         }
     }
 
+    private func refreshCameraReferenceImages(homeID: UUID) async {
+        let registrations = scene.cameraRegistrations.isEmpty ? (scene.cameraRegistration.map { [$0] } ?? []) : scene.cameraRegistrations
+        let available = registrations.compactMap { registration -> (UUID, String)? in
+            guard registration.status == .positioned,
+                  let cameraID = registration.cameraID,
+                  let snapshot = registration.referenceSnapshot else { return nil }
+            return (cameraID, snapshot.capturedAt ?? snapshot.downloadPath ?? "reference")
+        }
+        let activeIDs = Set(available.map(\.0))
+        cameraReferenceImages = cameraReferenceImages.filter { activeIDs.contains($0.key) }
+        cameraReferenceCaptureKeys = cameraReferenceCaptureKeys.filter { activeIDs.contains($0.key) }
+        for (cameraID, captureKey) in available where cameraReferenceCaptureKeys[cameraID] != captureKey {
+            do {
+                let data = try await apiClient.downloadCameraReferenceSnapshot(homeID: homeID, cameraID: cameraID)
+                guard !data.isEmpty else { continue }
+                cameraReferenceImages[cameraID] = data
+                cameraReferenceCaptureKeys[cameraID] = captureKey
+            } catch {
+                // A missing optional reference image must not hide the map itself.
+            }
+        }
+    }
+
     func uploadRoomPlan(_ capture: RoomPlanCaptureResult, cameraID: UUID?) async -> Bool {
+        do {
+            let artifact = try RoomPlanArtifactBuilder.build(from: capture.room)
+            let matrix = try capture.cameraToWorld.map { try RoomPlanMatrix.rowMajor($0) }
+            return await uploadRoomPlanArtifact(
+                artifact,
+                visualSamples: capture.visualSamples,
+                visualDiagnostics: capture.visualDiagnostics,
+                cameraToWorld: matrix,
+                trackingState: capture.trackingState,
+                cameraID: cameraID
+            )
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not prepare the native room scan."
+            return false
+        }
+    }
+
+    func uploadRoomPlanStructure(_ structure: CapturedStructure, captures: [RoomPlanCaptureResult], cameraID: UUID?) async -> Bool {
+        guard let lastCapture = captures.last else {
+            authError = "Capture at least one room before finishing the home scan."
+            return false
+        }
+        do {
+            let artifact = try RoomPlanArtifactBuilder.build(from: structure)
+            let visualSamples = captures.flatMap(\.visualSamples)
+            let diagnostics = RoomPlanVisualCaptureDiagnostics(
+                samplingAttempts: captures.reduce(0) { $0 + $1.visualDiagnostics.samplingAttempts },
+                missingFrameCount: captures.reduce(0) { $0 + $1.visualDiagnostics.missingFrameCount },
+                imageEncodingFailureCount: captures.reduce(0) { $0 + $1.visualDiagnostics.imageEncodingFailureCount },
+                invalidMatrixCount: captures.reduce(0) { $0 + $1.visualDiagnostics.invalidMatrixCount },
+                capturedSampleCount: visualSamples.count,
+                depthSampleCount: visualSamples.filter { $0.depthData != nil }.count,
+                lastTrackingState: lastCapture.visualDiagnostics.lastTrackingState,
+                estimatedAreaSquareMeters: captures.compactMap { $0.visualDiagnostics.estimatedAreaSquareMeters }.reduce(0, +),
+                recommendedVisualSampleCount: captures.reduce(0) { $0 + $1.visualDiagnostics.recommendedVisualSampleCount }
+            )
+            let matrix = try lastCapture.cameraToWorld.map { try RoomPlanMatrix.rowMajor($0) }
+            return await uploadRoomPlanArtifact(
+                artifact,
+                visualSamples: visualSamples,
+                visualDiagnostics: diagnostics,
+                cameraToWorld: matrix,
+                trackingState: lastCapture.trackingState,
+                cameraID: cameraID
+            )
+        } catch {
+            authError = (error as? LocalizedError)?.errorDescription ?? "Could not prepare the merged RoomPlan home scan."
+            return false
+        }
+    }
+
+    private func uploadRoomPlanArtifact(
+        _ artifact: NativeRoomPlanArtifact,
+        visualSamples: [RoomPlanVisualSample],
+        visualDiagnostics: RoomPlanVisualCaptureDiagnostics,
+        cameraToWorld: [[Double]]?,
+        trackingState: String,
+        cameraID: UUID?
+    ) async -> Bool {
         guard !runtimeConfiguration.isDemoMode else {
             authError = "RoomPlan scans can only be saved while connected to the live ONE backend."
             return false
@@ -1261,80 +1468,73 @@ final class AppStore {
         defer { isRoomPlanUploading = false }
 
         do {
-            let artifact = try RoomPlanArtifactBuilder.build(from: capture.room)
+            setRoomPlanSaveProgress(phase: "preparing", percent: 5, detail: "Preparing the RoomPlan geometry…")
             var scanMetadata = artifact.metadata
-            scanMetadata.visualSamplingAttempts = capture.visualDiagnostics.samplingAttempts
-            scanMetadata.visualMissingFrameCount = capture.visualDiagnostics.missingFrameCount
-            scanMetadata.visualImageEncodingFailureCount = capture.visualDiagnostics.imageEncodingFailureCount
-            scanMetadata.visualInvalidMatrixCount = capture.visualDiagnostics.invalidMatrixCount
-            scanMetadata.visualSampleCount = capture.visualDiagnostics.capturedSampleCount
-            scanMetadata.visualDepthSampleCount = capture.visualDiagnostics.depthSampleCount
-            scanMetadata.visualLastTrackingState = capture.visualDiagnostics.lastTrackingState
+            scanMetadata.visualSamplingAttempts = visualDiagnostics.samplingAttempts
+            scanMetadata.visualMissingFrameCount = visualDiagnostics.missingFrameCount
+            scanMetadata.visualImageEncodingFailureCount = visualDiagnostics.imageEncodingFailureCount
+            scanMetadata.visualInvalidMatrixCount = visualDiagnostics.invalidMatrixCount
+            scanMetadata.visualSampleCount = visualDiagnostics.capturedSampleCount
+            scanMetadata.visualDepthSampleCount = visualDiagnostics.depthSampleCount
+            scanMetadata.visualLastTrackingState = visualDiagnostics.lastTrackingState
+            scanMetadata.visualRecommendedSampleCount = visualDiagnostics.recommendedVisualSampleCount
+            scanMetadata.visualEstimatedAreaSquareMeters = visualDiagnostics.estimatedAreaSquareMeters
             artifactData = artifact.usdzData
+            setRoomPlanSaveProgress(phase: "map", percent: 12, detail: "Uploading the measured 3D map…")
             let map = try await apiClient.uploadRoomPlan(roomID: nil, scan: artifact.scan, metadata: scanMetadata)
             uploadedMapID = map.mapID
             pendingRoomPlanMapID = map.mapID
             pendingRoomPlanUSDZData = artifact.usdzData
+            setRoomPlanSaveProgress(phase: "landmarks", percent: 25, detail: "Map saved. Preparing localization landmarks…")
 
-            if !capture.visualSamples.isEmpty {
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-                // Upload viewpoints independently. The backend merges derived
-                // landmarks into one map index, so every part of the room can
-                // contribute without relying on one large fragile request.
-                let orderedSamples = capture.visualSamples.sorted {
-                    ($0.depthData != nil ? 1 : 0) > ($1.depthData != nil ? 1 : 0)
-                }
+            if !visualSamples.isEmpty {
                 var visualIndexReady = false
                 var receivedLandmarkResponse = false
-                let frames = orderedSamples.map { sample in
-                    RoomPlanVisualLandmarkFrameRequest(
-                        frameBase64: sample.jpegData.base64EncodedString(),
-                        width: sample.width,
-                        height: sample.height,
-                        depthBase64: sample.depthData?.base64EncodedString(),
-                        depthWidth: sample.depthWidth,
-                        depthHeight: sample.depthHeight,
-                        intrinsics: Matrix3x3Request(values: sample.intrinsics),
-                        cameraToWorld: sample.cameraToWorld,
-                        capturedAt: formatter.string(from: sample.capturedAt)
-                    )
-                }
-
-                for frame in frames {
-                    do {
-                        let visualIndex = try await apiClient.uploadRoomPlanVisualLandmarks(mapID: map.mapID, frames: [frame])
-                        receivedLandmarkResponse = true
-                        visualIndexReady = visualIndexReady || visualIndex.status == "ready"
-                    } catch {
-                        continue
-                    }
+                // Keep the captured samples as compressed Data and encode only
+                // the current one- or two-frame request. Encoding all RGB and
+                // LiDAR samples to Base64 up front briefly doubled the scan's
+                // memory footprint and could terminate the app while saving a
+                // large new-place scan.
+                pendingRoomPlanVisualUpload = PendingRoomPlanVisualUpload(mapID: map.mapID, samples: visualSamples)
+                let uploadResult = await uploadVisualLandmarkSamples(mapID: map.mapID, samples: visualSamples)
+                receivedLandmarkResponse = uploadResult.receivedResponse
+                visualIndexReady = uploadResult.ready
+                if uploadResult.failedFrameCount == 0 {
+                    pendingRoomPlanVisualUpload = nil
                 }
 
                 if !visualIndexReady {
-                    visualLandmarkWarning = receivedLandmarkResponse
-                        ? "The 3D map is saved, but the captured views did not contain enough stable visual landmarks to position the fixed camera. Try another scan with furniture, corners, artwork, or other textured surfaces in view."
-                        : "The 3D map is saved, but its visual landmark index could not be uploaded. Camera positioning is not ready yet."
+                    if uploadResult.failedFrameCount > 0 {
+                        visualLandmarkWarning = "The 3D map is saved, but \(uploadResult.failedFrameCount) visual views could not reach the local landmark service. Keep this screen open and retry landmark upload before scanning again."
+                    } else {
+                        visualLandmarkWarning = receivedLandmarkResponse
+                            ? "The 3D map is saved, but the captured views did not contain enough stable visual landmarks to position the fixed camera. Try another scan with furniture, corners, artwork, or other textured surfaces in view."
+                            : "The 3D map is saved, but its visual landmark index could not be uploaded. Camera positioning is not ready yet."
+                    }
                 }
             } else {
                 visualLandmarkWarning = "The 3D map is saved, but too few RGB + camera-pose samples were captured for automatic positioning of a separate camera."
             }
 
+            setRoomPlanSaveProgress(
+                phase: "finishing",
+                percent: 85,
+                detail: cameraID == nil ? "Attaching the 3D model…" : "Registering the fixed-camera pose…"
+            )
+
             if let cameraID {
                 do {
-                    guard let cameraToWorld = capture.cameraToWorld else {
+                    guard let cameraToWorld else {
                         throw RoomPlanCaptureError.captureFailed("Camera tracking was unavailable at the end of the scan. Keep the camera still in its final position and scan again.")
                     }
-                    let matrix = try RoomPlanMatrix.rowMajor(cameraToWorld)
                     _ = try await apiClient.registerRoomPlanCamera(
                         homeID: session.homeID,
                         request: RoomPlanCameraRegistrationRequest(
                             cameraID: cameraID,
                             mapID: map.mapID,
-                            cameraToWorld: matrix,
+                            cameraToWorld: cameraToWorld,
                             confidence: nil,
-                            trackingState: capture.trackingState
+                            trackingState: trackingState
                         )
                     )
                 } catch {
@@ -1342,12 +1542,15 @@ final class AppStore {
                 }
             }
 
+            setRoomPlanSaveProgress(phase: "model", percent: 90, detail: "Attaching the 3D model…")
             let attachment = try await apiClient.uploadRoomPlanUSDZ(mapID: map.mapID, data: artifact.usdzData)
             pendingRoomPlanMapID = nil
             pendingRoomPlanUSDZData = nil
             mapUploadResult = ArtifactUploadResponse(artifactID: map.mapID, sha256: attachment.usdz?.sha256 ?? "", expiresAt: nil)
             try cacheRoomPlanModel(mapID: map.mapID, data: artifact.usdzData)
+            setRoomPlanSaveProgress(phase: "refreshing", percent: 97, detail: "Refreshing the home map…")
             scene = try await apiClient.refreshScene(homeID: session.homeID)
+            setRoomPlanSaveProgress(phase: "complete", percent: 100, detail: "Map and camera-localization data saved.")
             if cameraID != nil, scene.cameraRegistration?.status == .needsRescan {
                 roomPlanModelError = "The 3D room map is saved, but this device's camera pose was not stable enough to register. Retry camera placement only if this iPhone is also the fixed camera."
             } else if scene.isRenderable3D {
@@ -1372,7 +1575,343 @@ final class AppStore {
             } else {
                 authError = (error as? LocalizedError)?.errorDescription ?? "Could not upload the native room scan."
             }
+            let detail = (error as? LocalizedError)?.errorDescription ?? "The room scan could not be saved."
+            setRoomPlanSaveProgress(
+                phase: "failed",
+                percent: roomPlanSaveProgress?.percent ?? 0,
+                detail: "Save paused: \(detail)"
+            )
             return false
+        }
+    }
+
+    private func setRoomPlanSaveProgress(phase: String, percent: Int, detail: String) {
+        roomPlanSaveProgress = RoomPlanSaveProgress(
+            phase: phase,
+            percent: min(100, max(0, percent)),
+            detail: detail
+        )
+    }
+
+    private func updateRoomPlanLandmarkSaveProgress(phase: String) {
+        guard let progress = roomPlanVisualUploadProgress else { return }
+        let ratio = progress.totalFrameCount > 0
+            ? Double(progress.completedFrameCount) / Double(progress.totalFrameCount)
+            : 0
+        let percent = 25 + Int((ratio * 60).rounded())
+        let detail: String
+        switch phase {
+        case "retrying": detail = "Retrying a smaller landmark batch…"
+        case "failed": detail = "Landmark upload paused; the map can be retried without rescanning."
+        default: detail = "Uploading localization landmarks (up to 3 batches at a time)…"
+        }
+        setRoomPlanSaveProgress(phase: phase, percent: percent, detail: detail)
+    }
+
+    private func updateRoomPlanVisualUploadProgress(_ update: (inout RoomPlanVisualLandmarkUploadProgress) -> Void) {
+        guard var progress = roomPlanVisualUploadProgress else { return }
+        update(&progress)
+        roomPlanVisualUploadProgress = progress
+    }
+
+    private struct VisualLandmarkUploadResult {
+        let ready: Bool
+        let receivedResponse: Bool
+        let failedFrameCount: Int
+        let lastError: String?
+    }
+
+    private struct VisualLandmarkBatchUploadResult {
+        let uploadedFrameCount: Int
+        let ready: Bool
+        let receivedResponse: Bool
+        let failedFrameCount: Int
+        let lastError: String?
+    }
+
+    private func visualLandmarkFrame(from sample: RoomPlanVisualSample) async -> RoomPlanVisualLandmarkFrameRequest {
+        await Task.detached(priority: .userInitiated) {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return RoomPlanVisualLandmarkFrameRequest(
+                frameBase64: sample.jpegData.base64EncodedString(),
+                width: sample.width,
+                height: sample.height,
+                depthBase64: sample.depthData?.base64EncodedString(),
+                depthWidth: sample.depthWidth,
+                depthHeight: sample.depthHeight,
+                intrinsics: Matrix3x3Request(values: sample.intrinsics),
+                cameraToWorld: sample.cameraToWorld,
+                capturedAt: formatter.string(from: sample.capturedAt)
+            )
+        }.value
+    }
+
+    private func uploadVisualLandmarkBatch(
+        mapID: UUID,
+        frames: [RoomPlanVisualLandmarkFrameRequest],
+        currentBatch: Int,
+        batchCount: Int,
+        deadline: Date
+    ) async -> VisualLandmarkBatchUploadResult {
+        // Keep requests comfortably below the API's 24 MB decoded-memory
+        // guard. A large iPhone RGB frame plus Float32 depth can make four
+        // frames unexpectedly large even though the frame count is small.
+        let maximumEncodedCharacters = 8_000_000
+        var queue = [frames]
+        var uploadedFrameCount = 0
+        var failedFrameCount = 0
+        var receivedResponse = false
+        var ready = false
+        var lastError: String?
+
+        while !queue.isEmpty {
+            let batch = queue.removeFirst()
+            if Date() >= deadline {
+                let message = "No visual-landmark batch completed within four minutes. Check that the local landmark service is running, then retry."
+                lastError = message
+                failedFrameCount += batch.count + queue.reduce(0) { $0 + $1.count }
+                updateRoomPlanVisualUploadProgress {
+                    $0.phase = "failed"
+                    $0.retryAttempt = 0
+                    $0.lastError = message
+                }
+                updateRoomPlanLandmarkSaveProgress(phase: "failed")
+                break
+            }
+            guard batch.reduce(0, { $0 + $1.frameBase64.utf8.count + ($1.depthBase64?.utf8.count ?? 0) }) <= maximumEncodedCharacters || batch.count == 1 else {
+                let midpoint = batch.count / 2
+                queue.insert(Array(batch[midpoint...]), at: 0)
+                queue.insert(Array(batch[..<midpoint]), at: 0)
+                continue
+            }
+
+            updateRoomPlanVisualUploadProgress {
+                $0.currentBatch = currentBatch
+                $0.batchCount = max($0.batchCount, batchCount)
+                $0.phase = "uploading"
+                $0.retryAttempt = 0
+                $0.lastError = nil
+            }
+            updateRoomPlanLandmarkSaveProgress(phase: "uploading")
+
+            var response: RoomPlanVisualLandmarksResponse?
+            for attempt in 1...3 {
+                guard Date() < deadline else { break }
+                updateRoomPlanVisualUploadProgress { $0.retryAttempt = attempt }
+                do {
+                    response = try await apiClient.uploadRoomPlanVisualLandmarks(mapID: mapID, frames: batch)
+                    break
+                } catch {
+                    lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    updateRoomPlanVisualUploadProgress {
+                        $0.phase = "retrying"
+                        $0.lastError = lastError
+                    }
+                    updateRoomPlanLandmarkSaveProgress(phase: "retrying")
+                    if attempt < 3, Date() < deadline {
+                        try? await Task.sleep(nanoseconds: UInt64(attempt) * 750_000_000)
+                    }
+                }
+            }
+
+            if let response {
+                receivedResponse = true
+                ready = ready || response.status == "ready"
+                uploadedFrameCount += batch.count
+                continue
+            }
+
+            if batch.count > 1 {
+                let midpoint = batch.count / 2
+                queue.insert(Array(batch[midpoint...]), at: 0)
+                queue.insert(Array(batch[..<midpoint]), at: 0)
+                updateRoomPlanVisualUploadProgress {
+                    $0.phase = "retrying"
+                    $0.batchCount = max($0.batchCount, batchCount + queue.count)
+                }
+                updateRoomPlanLandmarkSaveProgress(phase: "retrying")
+            } else {
+                failedFrameCount += batch.count
+                updateRoomPlanVisualUploadProgress {
+                    $0.failedFrameCount = failedFrameCount
+                    $0.phase = "failed"
+                }
+                updateRoomPlanLandmarkSaveProgress(phase: "failed")
+            }
+        }
+
+        return VisualLandmarkBatchUploadResult(
+            uploadedFrameCount: uploadedFrameCount,
+            ready: ready,
+            receivedResponse: receivedResponse,
+            failedFrameCount: failedFrameCount,
+            lastError: lastError
+        )
+    }
+
+    private func makeVisualLandmarkBatch(
+        from samples: [RoomPlanVisualSample],
+        startIndex: Int,
+        maximumFrames: Int,
+        maximumEncodedCharacters: Int
+    ) async -> (frames: [RoomPlanVisualLandmarkFrameRequest], nextIndex: Int) {
+        var frames: [RoomPlanVisualLandmarkFrameRequest] = []
+        frames.reserveCapacity(maximumFrames)
+        var encodedCharacters = 0
+        var index = startIndex
+
+        while index < samples.count && frames.count < maximumFrames {
+            let frame = await visualLandmarkFrame(from: samples[index])
+            let frameCharacters = frame.frameBase64.utf8.count + (frame.depthBase64?.utf8.count ?? 0)
+            if !frames.isEmpty && encodedCharacters + frameCharacters > maximumEncodedCharacters {
+                break
+            }
+            frames.append(frame)
+            encodedCharacters += frameCharacters
+            index += 1
+        }
+
+        return (frames, index)
+    }
+
+    private func uploadVisualLandmarkSamples(mapID: UUID, samples: [RoomPlanVisualSample]) async -> VisualLandmarkUploadResult {
+        let totalFrameCount = samples.count
+        let maximumFramesPerBatch = 2
+        let maximumConcurrentBatches = 3
+        let maximumEncodedCharacters = 8_000_000
+        let initialBatchCount = max(1, Int(ceil(Double(totalFrameCount) / Double(maximumFramesPerBatch))))
+        roomPlanVisualUploadProgress = RoomPlanVisualLandmarkUploadProgress(
+            mapID: mapID,
+            phase: "uploading",
+            completedFrameCount: 0,
+            totalFrameCount: totalFrameCount,
+            failedFrameCount: 0,
+            currentBatch: 0,
+            batchCount: initialBatchCount,
+            retryAttempt: 0,
+            lastError: nil
+        )
+        updateRoomPlanLandmarkSaveProgress(phase: "landmarks")
+
+        var nextSampleIndex = 0
+        var nextBatchNumber = 0
+        var completedFrameCount = 0
+        var receivedResponse = false
+        var ready = false
+        var failedFrameCount = 0
+        var lastError: String?
+        let deadline = Date().addingTimeInterval(240)
+
+        await withTaskGroup(of: VisualLandmarkBatchUploadResult.self) { group in
+            var inFlightBatches = 0
+
+            while inFlightBatches < maximumConcurrentBatches && nextSampleIndex < totalFrameCount {
+                let prepared = await makeVisualLandmarkBatch(
+                    from: samples,
+                    startIndex: nextSampleIndex,
+                    maximumFrames: maximumFramesPerBatch,
+                    maximumEncodedCharacters: maximumEncodedCharacters
+                )
+                guard !prepared.frames.isEmpty else { break }
+                nextSampleIndex = prepared.nextIndex
+                nextBatchNumber += 1
+                let batchNumber = nextBatchNumber
+                inFlightBatches += 1
+                group.addTask { [self] in
+                    await self.uploadVisualLandmarkBatch(
+                        mapID: mapID,
+                        frames: prepared.frames,
+                        currentBatch: batchNumber,
+                        batchCount: initialBatchCount,
+                        deadline: deadline
+                    )
+                }
+            }
+
+            while inFlightBatches > 0 {
+                guard let result = await group.next() else { break }
+                inFlightBatches -= 1
+                completedFrameCount += result.uploadedFrameCount
+                receivedResponse = receivedResponse || result.receivedResponse
+                ready = ready || result.ready
+                lastError = result.lastError ?? lastError
+
+                if result.failedFrameCount > 0 {
+                    failedFrameCount = max(failedFrameCount, result.failedFrameCount)
+                }
+
+                updateRoomPlanVisualUploadProgress {
+                    $0.completedFrameCount = min(totalFrameCount, completedFrameCount)
+                    $0.failedFrameCount = failedFrameCount
+                    $0.phase = result.failedFrameCount > 0 ? "failed" : "uploading"
+                    $0.retryAttempt = 0
+                    if let resultError = result.lastError {
+                        $0.lastError = resultError
+                    }
+                }
+                updateRoomPlanLandmarkSaveProgress(phase: result.failedFrameCount > 0 ? "failed" : "uploading")
+
+                if failedFrameCount == 0 && nextSampleIndex < totalFrameCount {
+                    let prepared = await makeVisualLandmarkBatch(
+                        from: samples,
+                        startIndex: nextSampleIndex,
+                        maximumFrames: maximumFramesPerBatch,
+                        maximumEncodedCharacters: maximumEncodedCharacters
+                    )
+                    if !prepared.frames.isEmpty {
+                        nextSampleIndex = prepared.nextIndex
+                        nextBatchNumber += 1
+                        let batchNumber = nextBatchNumber
+                        inFlightBatches += 1
+                        group.addTask { [self] in
+                            await self.uploadVisualLandmarkBatch(
+                                mapID: mapID,
+                                frames: prepared.frames,
+                                currentBatch: batchNumber,
+                                batchCount: initialBatchCount,
+                                deadline: deadline
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        completedFrameCount = min(totalFrameCount, completedFrameCount)
+        if completedFrameCount == totalFrameCount && failedFrameCount == 0 {
+            updateRoomPlanVisualUploadProgress {
+                $0.completedFrameCount = completedFrameCount
+                $0.phase = ready ? "complete" : "failed"
+                $0.retryAttempt = 0
+            }
+        } else {
+            failedFrameCount = max(failedFrameCount, totalFrameCount - completedFrameCount)
+            updateRoomPlanVisualUploadProgress {
+                $0.completedFrameCount = completedFrameCount
+                $0.failedFrameCount = failedFrameCount
+                $0.phase = "failed"
+                $0.retryAttempt = 0
+            }
+            updateRoomPlanLandmarkSaveProgress(phase: "failed")
+        }
+
+        return VisualLandmarkUploadResult(ready: ready, receivedResponse: receivedResponse, failedFrameCount: failedFrameCount, lastError: lastError)
+    }
+
+    func retryPendingRoomPlanVisualLandmarks() async {
+        guard let pendingRoomPlanVisualUpload else { return }
+        isRoomPlanUploading = true
+        defer { isRoomPlanUploading = false }
+        let result = await uploadVisualLandmarkSamples(mapID: pendingRoomPlanVisualUpload.mapID, samples: pendingRoomPlanVisualUpload.samples)
+        if result.failedFrameCount == 0 {
+            self.pendingRoomPlanVisualUpload = nil
+            if let session, let refreshed = try? await apiClient.refreshScene(homeID: session.homeID) {
+                scene = refreshed
+            }
+            roomPlanModelError = nil
+        } else {
+            roomPlanModelError = "\(result.failedFrameCount) visual views still could not reach the local landmark service. Retry again while this screen is open."
         }
     }
 
