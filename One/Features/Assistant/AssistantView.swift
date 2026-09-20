@@ -66,10 +66,12 @@ struct CaregiverAssistantView: View {
                         Text("Assistant")
                             .font(.system(size: 38, weight: .bold, design: .rounded))
                             .tracking(-1)
-                        Text("Summaries from recorded medication plans and check-ins only.")
+                        Text("Bounded context from medication records, daily check-ins, and reviewable safety signals.")
                             .font(.subheadline)
                             .foregroundStyle(OneTheme.secondaryInk)
                     }
+
+                    SafetyAnalyticsCard(events: store.events)
 
                     if !store.medicationSubjects.isEmpty {
                         Picker("For", selection: $store.selectedSubjectName) {

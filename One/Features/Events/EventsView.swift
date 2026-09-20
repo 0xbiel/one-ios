@@ -1,7 +1,161 @@
 import SwiftUI
+import UIKit
 
-struct EventsView: View { @Bindable var store: AppStore; var body: some View { NavigationStack { ScrollView { LazyVStack(alignment: .leading, spacing: 14) { Text("Events · \(store.selectedSubjectName)").font(.system(size: 38, weight: .bold, design: .rounded)).tracking(-1); Text("A reviewable record of observed moments.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk); if store.events.isEmpty { SurfaceCard(radius: 24) { Label { VStack(alignment: .leading, spacing: 4) { Text("No observations yet").font(.headline); Text("Recorded backend events will appear here when this household has them.").font(.subheadline).foregroundStyle(OneTheme.secondaryInk) } } icon: { Image(systemName: "tray").font(.title2).foregroundStyle(OneTheme.accentBlue) }.padding(18) } } else { ForEach(store.events) { event in NavigationLink { EventDetailView(event: event) } label: { EventRow(event: event) }.buttonStyle(.plain) } } }.padding(20) }.background(OneTheme.canvas.ignoresSafeArea()).safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }.toolbar(.hidden, for: .navigationBar) } } }
+struct EventsView: View {
+    @Bindable var store: AppStore
 
-struct EventRow: View { let event: ObservedEvent; var body: some View { HStack(spacing: 14) { Image(systemName: event.kind.symbol).font(.title3).foregroundStyle(OneTheme.accentBlue).frame(width: 40, height: 40).background(OneTheme.accentBlue.opacity(0.10), in: Circle()); VStack(alignment: .leading, spacing: 4) { Text(event.kind.title).font(.headline); Text(event.explanation).font(.subheadline).foregroundStyle(OneTheme.secondaryInk); Text("\(event.location) · \(event.timestamp.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.tertiary) }; Spacer(); ConfidenceBadge(confidence: event.confidence) }.padding(.vertical, 10).accessibilityElement(children: .combine).accessibilityLabel("\(event.kind.title), \(event.location), \(event.confidence.title) confidence") } }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    Text("Events · \(store.selectedSubjectName)")
+                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        .tracking(-1)
+                    Text("A reviewable record of observed moments.")
+                        .font(.subheadline)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                    SafetyAnalyticsCard(events: store.events)
+                    if store.events.isEmpty {
+                        SurfaceCard(radius: 24) {
+                            Label {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("No observations yet").font(.headline)
+                                    Text("Recorded backend events will appear here when this household has them.")
+                                        .font(.subheadline)
+                                        .foregroundStyle(OneTheme.secondaryInk)
+                                }
+                            } icon: {
+                                Image(systemName: "tray").font(.title2).foregroundStyle(OneTheme.accentBlue)
+                            }
+                            .padding(18)
+                        }
+                    } else {
+                        ForEach(store.events) { event in
+                            NavigationLink { EventDetailView(event: event, apiClient: store.apiClient, homeID: store.session?.homeID) } label: { EventRow(event: event) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .background(OneTheme.canvas.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+}
 
-struct EventDetailView: View { let event: ObservedEvent; var body: some View { ScrollView { VStack(alignment: .leading, spacing: 18) { Text(event.kind.title).font(.largeTitle.weight(.bold)); EventRow(event: event); if event.hasClip { SurfaceCard { Label("Local clip ready for review", systemImage: "play.circle.fill").font(.headline).padding(20) } }; Text("This is an observational signal for human review, not a diagnosis.").font(.footnote).foregroundStyle(OneTheme.amber) }.padding(20) }.background(OneTheme.canvas.ignoresSafeArea()).navigationTitle("Review").navigationBarTitleDisplayMode(.inline) } }
+struct SafetyAnalyticsCard: View {
+    let events: [ObservedEvent]
+
+    private var recentEvents: [ObservedEvent] {
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        return events.filter { $0.timestamp >= cutoff }
+    }
+
+    private var fallSignals: [ObservedEvent] { recentEvents.filter { $0.kind == .fallSuspected } }
+    private var checkInsToday: Int {
+        recentEvents.filter { $0.kind == .checkIn && Calendar.current.isDateInToday($0.timestamp) }.count
+    }
+
+    var body: some View {
+        SurfaceCard(radius: 24) {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("30-DAY CONTEXT").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(OneTheme.secondaryInk)
+                        Text("Safety signals").font(.title3.weight(.bold)).foregroundStyle(OneTheme.ink)
+                    }
+                    Spacer()
+                    Image(systemName: "chart.bar.xaxis").foregroundStyle(OneTheme.accentBlue)
+                }
+                HStack(spacing: 9) {
+                    metric("\(fallSignals.count)", "fall signals")
+                    metric("\(fallSignals.filter { !$0.reviewed }.count)", "need review")
+                    metric("\(checkInsToday)", "check-in today")
+                }
+                Text(fallSignals.isEmpty ? "No fall-safety signals are recorded in this window." : "Safety signals are heuristic observations for caregiver review, not diagnoses.")
+                    .font(.footnote)
+                    .foregroundStyle(fallSignals.isEmpty ? OneTheme.secondaryInk : OneTheme.amber)
+            }
+            .padding(18)
+        }
+    }
+
+    private func metric(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value).font(.title2.weight(.bold)).foregroundStyle(OneTheme.ink)
+            Text(label).font(.caption2).foregroundStyle(OneTheme.secondaryInk)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(OneTheme.canvas, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+struct EventRow: View { let event: ObservedEvent; private var accent: Color { event.kind == .fallSuspected ? .orange : OneTheme.accentBlue }; var body: some View { HStack(spacing: 14) { Image(systemName: event.kind.symbol).font(.title3).foregroundStyle(accent).frame(width: 40, height: 40).background(accent.opacity(0.12), in: Circle()); VStack(alignment: .leading, spacing: 4) { Text(event.kind.title).font(.headline); Text(event.explanation).font(.subheadline).foregroundStyle(OneTheme.secondaryInk); Text("\(event.location) · \(event.timestamp.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.tertiary) }; Spacer(); if event.kind == .fallSuspected { HStack(spacing: 6) { if event.snapshotPath != nil { Image(systemName: "photo").font(.caption2).foregroundStyle(.orange) }; Text("REVIEW").font(.caption2.weight(.bold)).foregroundStyle(.orange).padding(.horizontal, 8).padding(.vertical, 5).background(.orange.opacity(0.12), in: Capsule()) } } else { ConfidenceBadge(confidence: event.confidence) } }.padding(.vertical, 10).accessibilityElement(children: .combine).accessibilityLabel("\(event.kind.title), \(event.location), \(event.confidence.title) confidence\(event.kind == .fallSuspected ? ", needs review\(event.snapshotPath != nil ? ", snapshot available" : "")" : "")") } }
+
+struct EventDetailView: View {
+    let event: ObservedEvent
+    let apiClient: any OneAPIClient
+    let homeID: UUID?
+    @State private var snapshotData: Data?
+    @State private var snapshotLoading = false
+    @State private var snapshotFailed = false
+
+    init(event: ObservedEvent, apiClient: any OneAPIClient = MockOneAPIClient(), homeID: UUID? = nil) {
+        self.event = event
+        self.apiClient = apiClient
+        self.homeID = homeID
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(event.kind.title).font(.largeTitle.weight(.bold))
+                EventRow(event: event)
+                if event.snapshotPath != nil {
+                    SurfaceCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label("Snapshot captured with this signal", systemImage: "photo.on.rectangle")
+                                .font(.headline)
+                            if let snapshotData, let image = UIImage(data: snapshotData) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .accessibilityLabel("Snapshot captured when this safety signal was recorded")
+                            } else if snapshotLoading {
+                                ProgressView("Loading encrypted snapshot…")
+                                    .frame(maxWidth: .infinity, minHeight: 160)
+                            } else if snapshotFailed {
+                                Label("The event image is not available right now.", systemImage: "photo.badge.exclamationmark")
+                                    .foregroundStyle(OneTheme.secondaryInk)
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+                if event.hasClip { SurfaceCard { Label("Local clip ready for review", systemImage: "play.circle.fill").font(.headline).padding(20) } }
+                Text("This is an observational signal for human review, not a diagnosis.").font(.footnote).foregroundStyle(OneTheme.amber)
+            }
+            .padding(20)
+        }
+        .background(OneTheme.canvas.ignoresSafeArea())
+        .navigationTitle("Review")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: event.id) { await loadSnapshot() }
+    }
+
+    private func loadSnapshot() async {
+        guard event.snapshotPath != nil, let homeID else { return }
+        snapshotLoading = true
+        snapshotFailed = false
+        do {
+            snapshotData = try await apiClient.eventSnapshot(homeID: homeID, eventID: event.id)
+        } catch {
+            snapshotFailed = true
+        }
+        snapshotLoading = false
+    }
+}

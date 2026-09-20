@@ -96,7 +96,9 @@ struct OnboardingView: View {
                     }
                     .frame(width: contentWidth, alignment: .leading)
                     .frame(maxWidth: .infinity)
-                    .padding(.bottom, 18)
+                    // Keep the final choice/error content scrollable above the
+                    // fixed navigation footer on compact devices.
+                    .padding(.bottom, 112)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: pageIndex)
                 }
             }

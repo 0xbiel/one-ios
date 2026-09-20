@@ -111,6 +111,26 @@ struct CareRecipientUpdateRequest: Codable, Sendable, Equatable {
         else { try container.encodeNil(forKey: .roomLabel) }
     }
 }
+
+struct FaceEnrollmentFrameRequest: Codable, Sendable, Equatable {
+    let frameBase64: String
+    let width: Int
+    let height: Int
+    let cameraPosition: String
+}
+
+struct FaceEnrollmentRequest: Codable, Sendable, Equatable {
+    let frames: [FaceEnrollmentFrameRequest]
+}
+
+struct FaceProfile: Codable, Sendable, Equatable {
+    let careRecipientID: UUID
+    let status: FaceRecognitionStatus
+    let modelVersion: String?
+    let sampleCount: Int
+    let updatedAt: Date?
+}
+
 struct BootstrapAccountRequest: Codable, Sendable {
     let displayName: String
     let email: String?
@@ -277,6 +297,33 @@ struct FamilyAssistantResult: Codable, Sendable, Equatable {
     let summary: String
     let nextAction: String
     let limitations: String
+}
+struct DailyCheckInRequest: Encodable, Sendable, Equatable {
+    let transcript: String
+    let subjectUserID: UUID?
+    let careRecipientID: UUID?
+
+    private enum CodingKeys: String, CodingKey { case transcript, subjectUserID, careRecipientID }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(transcript, forKey: .transcript)
+        if let subjectUserID { try container.encode(subjectUserID.uuidString.lowercased(), forKey: .subjectUserID) }
+        if let careRecipientID { try container.encode(careRecipientID.uuidString.lowercased(), forKey: .careRecipientID) }
+    }
+}
+struct DailyCheckInResult: Codable, Sendable, Equatable {
+    let id: UUID
+    let eventID: UUID?
+    let careRecipientID: UUID?
+    let status: String
+    let trend: String
+    let explanation: String
+    let evidenceIDs: [String]?
+    let limitations: String
+    let degraded: Bool?
+    let inferenceStatus: String?
+    let modelVersion: String?
 }
 struct MedicationPlanUpdateRequest: Codable, Sendable {
     let name: String?
@@ -454,6 +501,8 @@ protocol OneAPIClient: Sendable {
     func activateCareSpace(id: UUID) async throws -> AuthSession
     func authenticated(accessToken: String, homeID: UUID) -> any OneAPIClient
     func events(homeID: UUID) async throws -> [ObservedEvent]
+    func recordDailyCheckIn(homeID: UUID, request: DailyCheckInRequest) async throws -> DailyCheckInResult
+    func eventSnapshot(homeID: UUID, eventID: UUID) async throws -> Data
     func roomObjects(homeID: UUID) async throws -> [RoomObject]
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera]
     func cameraRooms(homeID: UUID) async throws -> [CameraRoom]
@@ -476,6 +525,9 @@ protocol OneAPIClient: Sendable {
     func createCareRecipient(homeID: UUID, request: CareRecipientCreateRequest) async throws -> CareRecipient
     func updateCareRecipient(homeID: UUID, recipientID: UUID, request: CareRecipientUpdateRequest) async throws -> CareRecipient
     func deleteCareRecipient(homeID: UUID, recipientID: UUID) async throws
+    func faceProfile(homeID: UUID, recipientID: UUID) async throws -> FaceProfile
+    func enrollFaceProfile(homeID: UUID, recipientID: UUID, request: FaceEnrollmentRequest) async throws -> FaceProfile
+    func deleteFaceProfile(homeID: UUID, recipientID: UUID) async throws
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount]
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult
@@ -623,6 +675,10 @@ struct MockOneAPIClient: OneAPIClient {
     }
     func authenticated(accessToken: String, homeID: UUID) -> any OneAPIClient { self }
     func events(homeID: UUID) async throws -> [ObservedEvent] { [] }
+    func recordDailyCheckIn(homeID: UUID, request: DailyCheckInRequest) async throws -> DailyCheckInResult {
+        DailyCheckInResult(id: UUID(), eventID: UUID(), careRecipientID: request.careRecipientID, status: "stable", trend: "stable", explanation: "A familiar check-in was recorded in demo mode.", evidenceIDs: [], limitations: "Demo response; observations are not a diagnosis.", degraded: true, inferenceStatus: "demo", modelVersion: "demo-check-in-v1")
+    }
+    func eventSnapshot(homeID: UUID, eventID: UUID) async throws -> Data { Data() }
     func roomObjects(homeID: UUID) async throws -> [RoomObject] { [] }
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera] { [] }
     func cameraRooms(homeID: UUID) async throws -> [CameraRoom] { [] }
@@ -663,6 +719,14 @@ struct MockOneAPIClient: OneAPIClient {
     func deleteCareRecipient(homeID: UUID, recipientID: UUID) async throws {
         guard careRecipientState.delete(homeID: homeID, recipientID: recipientID) else { throw OneAPIError.server(status: 404, message: "Care recipient not found") }
     }
+    func faceProfile(homeID: UUID, recipientID: UUID) async throws -> FaceProfile {
+        FaceProfile(careRecipientID: recipientID, status: .notEnrolled, modelVersion: nil, sampleCount: 0, updatedAt: nil)
+    }
+    func enrollFaceProfile(homeID: UUID, recipientID: UUID, request: FaceEnrollmentRequest) async throws -> FaceProfile {
+        guard request.frames.count >= 3 else { throw OneAPIError.server(status: 422, message: "At least three face samples are required") }
+        return FaceProfile(careRecipientID: recipientID, status: .ready, modelVersion: "demo-local-face", sampleCount: request.frames.count, updatedAt: Date())
+    }
+    func deleteFaceProfile(homeID: UUID, recipientID: UUID) async throws { }
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] { [] }
     func createFamilyInvite(homeID: UUID, request: FamilyInviteRequest) async throws -> String { "123456" }
     func updateFamilyMember(homeID: UUID, userID: UUID, request: FamilyMemberUpdateRequest) async throws -> FamilyMemberMutationResult {
@@ -790,6 +854,15 @@ struct HTTPOneAPIClient: OneAPIClient {
         return response.data.compactMap(\.event)
     }
 
+    func recordDailyCheckIn(homeID: UUID, request: DailyCheckInRequest) async throws -> DailyCheckInResult {
+        let body = try JSONEncoder.one.encode(request)
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/check-ins", method: "POST", body: body, requiresSession: true)
+    }
+
+    func eventSnapshot(homeID: UUID, eventID: UUID) async throws -> Data {
+        try await sendRaw(path: "/homes/\(homeID.oneAPIPath)/events/\(eventID.oneAPIPath)/snapshot", method: "GET", body: nil, requiresSession: true, headers: [:])
+    }
+
     func roomObjects(homeID: UUID) async throws -> [RoomObject] {
         let response: BackendObjectsResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/objects/last-seen", method: "GET", body: nil, requiresSession: true)
         return response.data.compactMap(\.object)
@@ -889,6 +962,21 @@ struct HTTPOneAPIClient: OneAPIClient {
 
     func deleteCareRecipient(homeID: UUID, recipientID: UUID) async throws {
         _ = try await sendRaw(path: "/homes/\(homeID.oneAPIPath)/care-recipients/\(recipientID.oneAPIPath)", method: "DELETE", body: nil, requiresSession: true, headers: [:])
+    }
+
+    func faceProfile(homeID: UUID, recipientID: UUID) async throws -> FaceProfile {
+        let response: BackendFaceProfileResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/care-recipients/\(recipientID.oneAPIPath)/face-profile", method: "GET", body: nil, requiresSession: true)
+        return response.profile
+    }
+
+    func enrollFaceProfile(homeID: UUID, recipientID: UUID, request: FaceEnrollmentRequest) async throws -> FaceProfile {
+        let body = try JSONEncoder.one.encode(request)
+        let response: BackendFaceProfileResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/care-recipients/\(recipientID.oneAPIPath)/face-profile/enroll", method: "POST", body: body, requiresSession: true)
+        return response.profile
+    }
+
+    func deleteFaceProfile(homeID: UUID, recipientID: UUID) async throws {
+        _ = try await sendRaw(path: "/homes/\(homeID.oneAPIPath)/care-recipients/\(recipientID.oneAPIPath)/face-profile", method: "DELETE", body: nil, requiresSession: true, headers: [:])
     }
 
     func familyMembers(homeID: UUID) async throws -> [CaregiverAccount] {
@@ -1180,6 +1268,23 @@ private struct BackendMeResponse: Decodable { let actor: BackendActor }
 private struct BackendCareSpacesResponse: Decodable { let data: [CareSpaceSummary] }
 private struct BackendCareRecipientsResponse: Decodable { let data: [CareRecipient] }
 private struct BackendCareRecipientMutationResponse: Decodable { let data: CareRecipient }
+private struct BackendFaceProfileResponse: Decodable {
+    let careRecipientID: String
+    let status: FaceRecognitionStatus
+    let modelVersion: String?
+    let sampleCount: Int
+    let updatedAt: Date?
+
+    var profile: FaceProfile {
+        FaceProfile(
+            careRecipientID: UUID(uuidString: careRecipientID) ?? UUID(),
+            status: status,
+            modelVersion: modelVersion,
+            sampleCount: sampleCount,
+            updatedAt: updatedAt
+        )
+    }
+}
 private struct BackendActor: Decodable { let role: String }
 private struct BackendConsentResponse: Decodable { let id: String? }
 private struct BackendConsentsResponse: Decodable { let data: [BackendConsentRecord] }
@@ -1208,14 +1313,17 @@ private struct BackendEvent: Decodable {
     let confidence: Double?
     let firstSeenAt: Date?
     let lastSeenAt: Date?
+    let snapshotPath: String?
+    let snapshotContentType: String?
 
     var event: ObservedEvent? {
         guard let id = UUID(uuidString: id), let timestamp = lastSeenAt ?? firstSeenAt else { return nil }
         let kind: EventKind
         switch eventType {
-        case "check_in", "checkin": kind = .checkIn
+        case "check_in", "checkin", "daily_check_in": kind = .checkIn
         case "no_response": kind = .noResponse
         case "assistant_request": kind = .assistant
+        case "fall_suspected": kind = .fallSuspected
         default: kind = .movement
         }
         let confidenceLevel: ObservationConfidence
@@ -1224,7 +1332,7 @@ private struct BackendEvent: Decodable {
         case 0.5..<0.8: confidenceLevel = .medium
         default: confidenceLevel = .low
         }
-        return ObservedEvent(id: id, kind: kind, timestamp: timestamp, location: "Home · approximate", confidence: confidenceLevel, explanation: explanation ?? "An observation is available for review.", reviewed: status == "reviewed", hasClip: false)
+        return ObservedEvent(id: id, kind: kind, timestamp: timestamp, location: "Home · approximate", confidence: confidenceLevel, explanation: explanation ?? "An observation is available for review.", reviewed: status == "reviewed", hasClip: false, snapshotPath: snapshotPath, snapshotContentType: snapshotContentType)
     }
 }
 private struct BackendObjectsResponse: Decodable { let data: [BackendObject] }

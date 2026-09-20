@@ -15,7 +15,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>ONE uses the camera only when you choose to scan a room or view a paired camera.</string>
+	<string>ONE uses the camera only when you choose to scan a room, view a paired camera, or set up recognition for a cared-for person. Face templates are derived locally and raw samples are not kept.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ONE uses the microphone only while you press and hold to talk.</string>
 	<key>ONE_API_BASE_URL</key>

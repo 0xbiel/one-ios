@@ -95,22 +95,42 @@ struct CareSpaceSummary: Codable, Identifiable, Sendable, Equatable {
     ]
 }
 
+enum FaceRecognitionStatus: String, Codable, Sendable, Equatable {
+    case notEnrolled = "not_enrolled"
+    case ready
+    case unavailable
+    case revoked
+
+    var title: String {
+        switch self {
+        case .notEnrolled: "Not set up"
+        case .ready: "Recognition ready"
+        case .unavailable: "Recognition unavailable"
+        case .revoked: "Recognition turned off"
+        }
+    }
+}
+
 struct CareRecipient: Identifiable, Codable, Sendable, Equatable {
     let id: UUID
     var displayName: String
     var relationship: String?
     var roomLabel: String?
     var medicationRemindersEnabled: Bool?
+    var faceRecognitionStatus: FaceRecognitionStatus?
+    var faceProfileUpdatedAt: Date?
     let createdAt: Date
 
     var name: String { displayName }
 
-    init(id: UUID, displayName: String, relationship: String? = nil, roomLabel: String? = nil, medicationRemindersEnabled: Bool? = nil, createdAt: Date = Date()) {
+    init(id: UUID, displayName: String, relationship: String? = nil, roomLabel: String? = nil, medicationRemindersEnabled: Bool? = nil, faceRecognitionStatus: FaceRecognitionStatus? = nil, faceProfileUpdatedAt: Date? = nil, createdAt: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.relationship = relationship
         self.roomLabel = roomLabel
         self.medicationRemindersEnabled = medicationRemindersEnabled
+        self.faceRecognitionStatus = faceRecognitionStatus
+        self.faceProfileUpdatedAt = faceProfileUpdatedAt
         self.createdAt = createdAt
     }
 }
@@ -556,13 +576,13 @@ struct MapPin: Identifiable, Sendable {
 }
 
 enum EventKind: String, CaseIterable, Identifiable, Codable {
-    case checkIn, movement, noResponse, assistant
+    case checkIn, movement, noResponse, assistant, fallSuspected
     var id: String { rawValue }
     var title: String {
-        switch self { case .checkIn: "Daily check-in"; case .movement: "Movement observed"; case .noResponse: "No response"; case .assistant: "Assistant request" }
+        switch self { case .checkIn: "Daily check-in"; case .movement: "Movement observed"; case .noResponse: "No response"; case .assistant: "Assistant request"; case .fallSuspected: "Possible fall pattern" }
     }
     var symbol: String {
-        switch self { case .checkIn: "checkmark.seal.fill"; case .movement: "figure.walk.motion"; case .noResponse: "clock.badge.exclamationmark"; case .assistant: "waveform" }
+        switch self { case .checkIn: "checkmark.seal.fill"; case .movement: "figure.walk.motion"; case .noResponse: "clock.badge.exclamationmark"; case .assistant: "waveform"; case .fallSuspected: "exclamationmark.triangle.fill" }
     }
 }
 
@@ -575,6 +595,8 @@ struct ObservedEvent: Identifiable, Codable, Sendable {
     let explanation: String
     var reviewed: Bool
     var hasClip: Bool
+    var snapshotPath: String? = nil
+    var snapshotContentType: String? = nil
 }
 
 struct CameraCalibration: Codable, Sendable {

@@ -38,6 +38,7 @@ struct HomeView: View {
     @Bindable var store: AppStore
     @State private var showCameraSetup = false
     @State private var showCareSpaces = false
+    @State private var showDailyCheckIn = false
 
     var body: some View {
         NavigationStack {
@@ -71,6 +72,11 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showCameraSetup) {
             CameraManagerSheet(store: store)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showDailyCheckIn) {
+            DailyCheckInFlowView(store: store)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -157,6 +163,20 @@ struct HomeView: View {
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(OneTheme.secondaryInk)
+
+                Button {
+                    showDailyCheckIn = true
+                } label: {
+                    HStack {
+                        Image(systemName: store.events.contains(where: { $0.kind == .checkIn && Calendar.current.isDateInToday($0.timestamp) }) ? "checkmark.circle.fill" : "heart.text.square.fill")
+                        Text(store.events.contains(where: { $0.kind == .checkIn && Calendar.current.isDateInToday($0.timestamp) }) ? "Review today’s check-in" : "Start today’s check-in")
+                            .fontWeight(.semibold)
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(OneTheme.accentBlue)
 
                 Button {
                     store.selectedTab = "family"
@@ -251,7 +271,7 @@ struct HomeView: View {
                 SurfaceCard(radius: 28) {
                     VStack(spacing: 0) {
                         ForEach(Array(store.events.prefix(3))) { event in
-                            NavigationLink { EventDetailView(event: event) } label: { EventRow(event: event) }
+                            NavigationLink { EventDetailView(event: event, apiClient: store.apiClient, homeID: store.session?.homeID) } label: { EventRow(event: event) }
                                 .buttonStyle(.plain)
                             if event.id != store.events.prefix(3).last?.id { Divider() }
                         }
@@ -266,6 +286,130 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(eyebrow).font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(OneTheme.secondaryInk)
             Text(title).font(.title2.weight(.bold)).tracking(-0.5).foregroundStyle(OneTheme.ink)
+        }
+    }
+}
+
+private struct DailyCheckInFlowView: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var started = false
+    @State private var step = 0
+    @State private var answers: [String: String] = [:]
+
+    private let prompts: [(id: String, title: String, detail: String, options: [String])] = [
+        ("moment", "How are you feeling in this moment?", "Choose the answer that feels closest. There is no right answer.", ["Good", "Okay", "Hard to say"]),
+        ("routine", "How did the morning go?", "A simple reflection helps compare with the person’s own familiar rhythm.", ["Familiar", "A little different", "I’m not sure"]),
+        ("note", "Anything you want a caregiver to know?", "Keep it short, or choose that there is nothing to add.", ["Nothing to add", "I’d like to share something", "Skip for now"])
+    ]
+
+    private var currentPrompt: (id: String, title: String, detail: String, options: [String]) { prompts[step] }
+    private var currentAnswer: String? { answers[currentPrompt.id] }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("TODAY’S CHECK-IN").font(.caption.weight(.bold)).tracking(1.2).foregroundStyle(OneTheme.secondaryInk)
+                    Text(started ? currentPrompt.title : "A calm moment, with context.").font(.largeTitle.weight(.bold)).foregroundStyle(OneTheme.ink)
+                    Text(started ? currentPrompt.detail : "Three short prompts become a bounded signal for the caregiver. You can go back at any time.")
+                        .font(.subheadline)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+
+                if started {
+                    Text("PROMPT \(step + 1) OF \(prompts.count)")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.1)
+                        .foregroundStyle(OneTheme.accentBlue)
+                    VStack(spacing: 10) {
+                        ForEach(currentPrompt.options, id: \.self) { option in
+                            Button {
+                                answers[currentPrompt.id] = option
+                            } label: {
+                                HStack {
+                                    Text(option).font(.body.weight(.semibold))
+                                    Spacer()
+                                    if currentAnswer == option { Image(systemName: "checkmark.circle.fill") }
+                                }
+                                .foregroundStyle(currentAnswer == option ? OneTheme.accentBlue : OneTheme.ink)
+                                .padding(16)
+                                .background(currentAnswer == option ? OneTheme.accentBlue.opacity(0.10) : OneTheme.surface, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                                .overlay { RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(currentAnswer == option ? OneTheme.accentBlue.opacity(0.5) : OneTheme.ink.opacity(0.08), lineWidth: 1) }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    HStack(spacing: 12) {
+                        Button {
+                            if step == 0 { started = false } else { step -= 1 }
+                        } label: { Label("Back", systemImage: "arrow.left") }
+                            .buttonStyle(.bordered)
+                        Button {
+                            if step < prompts.count - 1 {
+                                step += 1
+                            } else {
+                                let transcript = prompts.map { "\($0.title): \(answers[$0.id] ?? "Not answered")" }.joined(separator: "\n")
+                                Task {
+                                    await store.submitDailyCheckIn(transcript: transcript)
+                                    if store.dailyCheckInResult != nil {
+                                        started = false
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack { Text(store.isDailyCheckInLoading ? "Recording…" : step == prompts.count - 1 ? "Record check-in" : "Continue"); if step < prompts.count - 1 { Image(systemName: "arrow.right") } }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(OneTheme.accentBlue)
+                        .disabled(currentAnswer == nil || store.isDailyCheckInLoading)
+                    }
+                } else if let result = store.dailyCheckInResult {
+                    SurfaceCard(radius: 22) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("RECORDED RESULT · \(result.status.uppercased())").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(OneTheme.secondaryInk)
+                            Text(result.trend == "unknown" ? "Keep the context human." : "Trend: \(result.trend)").font(.title3.weight(.bold))
+                            Text(result.explanation).font(.subheadline).foregroundStyle(OneTheme.secondaryInk)
+                            Text(result.limitations).font(.footnote).foregroundStyle(OneTheme.amber)
+                        }
+                        .padding(18)
+                    }
+                    Button("Run check-in again") { answers = [:]; step = 0; started = true }
+                        .buttonStyle(.borderedProminent)
+                        .tint(OneTheme.accentBlue)
+                } else {
+                    SafetyAnalyticsCard(events: store.events)
+                    Button {
+                        answers = [:]
+                        step = 0
+                        started = true
+                    } label: {
+                        Label("Start check-in", systemImage: "heart.text.square.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 5)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(OneTheme.accentBlue)
+                }
+
+                if let error = store.dailyCheckInError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.amber)
+                }
+                Label("Only the bounded answer summary is retained; this flow does not store raw audio.", systemImage: "lock.shield")
+                    .font(.footnote)
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+            .padding(20)
+            .background(OneTheme.canvas.ignoresSafeArea())
+            .navigationTitle("Daily check-in")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+            }
         }
     }
 }
@@ -575,7 +719,9 @@ struct CameraCalibrationSheet: View {
                             .frame(width: contentWidth, alignment: .leading)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 22)
-                            .padding(.bottom, 22)
+                            // Keep calibration content clear of the fixed
+                            // footer when the review/manual controls are tall.
+                            .padding(.bottom, 112)
                             .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: calibration?.status)
                     }
                 }
@@ -1219,7 +1365,10 @@ private struct CameraPairingSheet: View {
                             }
                             .frame(width: contentWidth, alignment: .leading)
                             .frame(maxWidth: .infinity)
-                            .padding(.bottom, 18)
+                            // The pairing actions stay pinned below the scroll
+                            // view, so the final helper text must scroll above
+                            // their full height.
+                            .padding(.bottom, 112)
                             .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: step)
                         }
                         .scrollDismissesKeyboard(.interactively)

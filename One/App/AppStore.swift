@@ -25,12 +25,15 @@ final class AppStore {
     var role: UserRole = .caregiver
     var selectedTab = "overview"
     var events: [ObservedEvent]
+    var dailyCheckInResult: DailyCheckInResult?
+    var isDailyCheckInLoading = false
+    var dailyCheckInError: String?
     var scan: RoomScan
     var assistantMessages: [AssistantMessage] = [
         AssistantMessage(isUser: false, text: "Hi, I’m here for a calm daily check-in. Press and hold when you’d like to talk.")
     ]
     var familyAssistantMessages: [AssistantMessage] = [
-        AssistantMessage(isUser: false, text: "I can summarize medication plans and check-ins for the person you select. I do not make care or medication decisions.")
+        AssistantMessage(isUser: false, text: "I can summarize medication records, daily check-ins, and bounded safety signals for the person you select. I do not diagnose or make care decisions.")
     ]
     var isListening = false
     var consents: [ConsentRecord]
@@ -243,6 +246,7 @@ final class AppStore {
         let now = Date()
         let events = [
             ObservedEvent(id: UUID(), kind: .checkIn, timestamp: now.addingTimeInterval(-3600), location: "Living room", confidence: .high, explanation: "A familiar morning check-in was completed.", reviewed: false, hasClip: false),
+            ObservedEvent(id: UUID(), kind: .fallSuspected, timestamp: now.addingTimeInterval(-7200), location: "Living room · approximate", confidence: .medium, explanation: "A possible fall pattern was observed across multiple frames. Please check in with María. This is a safety signal for human review, not a diagnosis.", reviewed: false, hasClip: false),
             ObservedEvent(id: UUID(), kind: .movement, timestamp: now.addingTimeInterval(-86400), location: "Kitchen · approximate", confidence: .medium, explanation: "Movement was observed near the calibrated kitchen zone.", reviewed: true, hasClip: true),
             ObservedEvent(id: UUID(), kind: .assistant, timestamp: now.addingTimeInterval(-86400 * 2), location: "Home", confidence: .high, explanation: "The resident used push-to-talk to ask for the day’s reminder.", reviewed: true, hasClip: false)
         ]
@@ -812,6 +816,95 @@ final class AppStore {
     }
 
     @discardableResult
+    func enrollFaceProfile(for recipient: CareRecipient, samples: [FaceEnrollmentFrameRequest]) async -> Bool {
+        guard canManageCareRecipients else {
+            careRecipientError = "Only a caregiver can set up recognition for a person in this care space."
+            return false
+        }
+        guard samples.count >= 3 else {
+            careRecipientError = "Capture at least three clear views before continuing."
+            return false
+        }
+        isCareRecipientMutating = true
+        careRecipientError = nil
+        defer { isCareRecipientMutating = false }
+
+        if runtimeConfiguration.isDemoMode {
+            if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+                careRecipients[index].faceRecognitionStatus = .ready
+                careRecipients[index].faceProfileUpdatedAt = Date()
+            }
+            return true
+        }
+
+        guard let session else {
+            careRecipientError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        do {
+            try await apiClient.recordConsent(
+                homeID: session.homeID,
+                request: ConsentRequest(
+                    purpose: "face_recognition",
+                    policyVersion: "2026-09",
+                    granted: true,
+                    careRecipientID: recipient.id
+                )
+            )
+            let profile = try await apiClient.enrollFaceProfile(
+                homeID: session.homeID,
+                recipientID: recipient.id,
+                request: FaceEnrollmentRequest(frames: samples)
+            )
+            if let index = careRecipients.firstIndex(where: { $0.id == profile.careRecipientID }) {
+                careRecipients[index].faceRecognitionStatus = profile.status
+                careRecipients[index].faceProfileUpdatedAt = profile.updatedAt
+            }
+            await refreshCareRecipients()
+            return true
+        } catch {
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not set up face recognition for this person."
+            return false
+        }
+    }
+
+    @discardableResult
+    func disableFaceProfile(for recipient: CareRecipient) async -> Bool {
+        guard canManageCareRecipients else {
+            careRecipientError = "Only a caregiver can change recognition for a person in this care space."
+            return false
+        }
+        isCareRecipientMutating = true
+        careRecipientError = nil
+        defer { isCareRecipientMutating = false }
+
+        if runtimeConfiguration.isDemoMode {
+            if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+                careRecipients[index].faceRecognitionStatus = .revoked
+                careRecipients[index].faceProfileUpdatedAt = Date()
+            }
+            return true
+        }
+
+        guard let session else {
+            careRecipientError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+        do {
+            try await apiClient.deleteFaceProfile(homeID: session.homeID, recipientID: recipient.id)
+            if let index = careRecipients.firstIndex(where: { $0.id == recipient.id }) {
+                careRecipients[index].faceRecognitionStatus = .revoked
+                careRecipients[index].faceProfileUpdatedAt = Date()
+            }
+            await refreshCareRecipients()
+            return true
+        } catch {
+            careRecipientError = (error as? LocalizedError)?.errorDescription ?? "Could not turn off face recognition for this person."
+            return false
+        }
+    }
+
+    @discardableResult
     func setMedicationRemindersEnabled(for recipient: CareRecipient, enabled: Bool) async -> Bool {
         guard canManageCareRecipients else {
             careRecipientError = "Only a caregiver can change medication reminders for this person."
@@ -857,7 +950,7 @@ final class AppStore {
         guard !trimmed.isEmpty else { return }
         familyAssistantMessages.append(AssistantMessage(isUser: true, text: trimmed))
         if runtimeConfiguration.isDemoMode {
-            familyAssistantMessages.append(AssistantMessage(isUser: false, text: "Today's medication plan is ready for review. This demo assistant only summarizes recorded plans and check-ins."))
+            familyAssistantMessages.append(AssistantMessage(isUser: false, text: "Today's medication plan, daily check-in, and safety context are ready for review. This assistant summarizes observations; it does not diagnose."))
             return
         }
         guard let session else {
@@ -870,6 +963,25 @@ final class AppStore {
         } catch {
             authError = (error as? LocalizedError)?.errorDescription ?? "The caregiver assistant is unavailable."
         }
+    }
+
+    func submitDailyCheckIn(transcript: String) async {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isDailyCheckInLoading else { return }
+        isDailyCheckInLoading = true
+        dailyCheckInError = nil
+        dailyCheckInResult = nil
+        do {
+            let result = try await apiClient.recordDailyCheckIn(
+                homeID: session?.homeID ?? UUID(),
+                request: DailyCheckInRequest(transcript: trimmed, subjectUserID: selectedSubjectID == nil ? session?.userID : nil, careRecipientID: selectedSubjectID)
+            )
+            dailyCheckInResult = result
+            if !runtimeConfiguration.isDemoMode { await refreshLiveData() }
+        } catch {
+            dailyCheckInError = (error as? LocalizedError)?.errorDescription ?? "Could not record today’s check-in."
+        }
+        isDailyCheckInLoading = false
     }
 
     func refreshLiveData() async {
@@ -2001,6 +2113,9 @@ final class AppStore {
         do {
             let data = try await apiClient.downloadRoomPlanUSDZ(mapID: mapID)
             try cacheRoomPlanModel(mapID: mapID, data: data)
+            if let roomPlanModelURL {
+                await RoomPlanModelCache.preload(url: roomPlanModelURL)
+            }
             roomPlanModelError = nil
         } catch {
             roomPlanModelError = "The 3D asset could not be downloaded. Tap retry to try again."

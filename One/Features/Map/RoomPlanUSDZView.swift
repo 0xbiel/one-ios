@@ -1,7 +1,43 @@
 import SwiftUI
 import RealityKit
+import Combine
 import simd
 import UIKit
+
+@MainActor
+enum RoomPlanModelCache {
+    private static var models: [URL: ModelEntity] = [:]
+    private static var cancellables: [URL: AnyCancellable] = [:]
+
+    static func preload(url: URL) async {
+        guard models[url] == nil else { return }
+
+        let model: ModelEntity? = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ModelEntity, Error>) in
+            var resolved = false
+            let cancellable = ModelEntity.loadModelAsync(contentsOf: url)
+                .sink(receiveCompletion: { completion in
+                    Self.cancellables[url] = nil
+                    if !resolved, case let .failure(error) = completion {
+                        resolved = true
+                        continuation.resume(throwing: error)
+                    }
+                }, receiveValue: { model in
+                    guard !resolved else { return }
+                    resolved = true
+                    model.generateCollisionShapes(recursive: true)
+                    continuation.resume(returning: model)
+                })
+            Self.cancellables[url] = cancellable
+        }
+        if let model {
+            models[url] = model
+        }
+    }
+
+    static func clone(for url: URL) -> ModelEntity? {
+        models[url]?.clone(recursive: true) as? ModelEntity
+    }
+}
 
 struct RoomPlanUSDZView: View {
     let url: URL
@@ -40,6 +76,8 @@ private struct RealityKitRoomView: UIViewRepresentable {
 
     final class Coordinator: NSObject {
         var loadedURL: URL?
+        var loadingURL: URL?
+        var modelLoadCancellable: AnyCancellable?
         var roomModel: ModelEntity?
         var overlayContainer: Entity?
         var onPresenceSelected: ((RoomObject) -> Void)?
@@ -88,44 +126,60 @@ private struct RealityKitRoomView: UIViewRepresentable {
     }
 
     private func loadRoomIfNeeded(into view: ARView, context: Context) {
-        guard context.coordinator.loadedURL != url else { return }
+        guard context.coordinator.loadedURL != url,
+              context.coordinator.loadingURL != url else { return }
 
         for anchor in view.scene.anchors {
             view.scene.removeAnchor(anchor)
         }
+        context.coordinator.modelLoadCancellable?.cancel()
+        context.coordinator.modelLoadCancellable = nil
         context.coordinator.loadedURL = nil
+        context.coordinator.loadingURL = url
         context.coordinator.roomModel = nil
         context.coordinator.overlayContainer = nil
 
-        do {
-            let model = try ModelEntity.loadModel(contentsOf: url)
-            model.generateCollisionShapes(recursive: true)
-            let bounds = model.visualBounds(relativeTo: model)
-            let center = bounds.center
-            let extents = bounds.extents
-            model.position = SIMD3<Float>(-center.x, -center.y, -center.z)
-
-            let anchor = AnchorEntity(world: .zero)
-            anchor.addChild(model)
-
-            let camera = PerspectiveCamera()
-            camera.camera.fieldOfViewInDegrees = 46
-            let halfSpan = max(max(extents.x, extents.z) * 0.5, 0.4)
-            let halfFOV = Float.pi * 46 / 360
-            let fitDistance = halfSpan / max(tanf(halfFOV), 0.1) * 1.2
-            camera.position = SIMD3<Float>(0, max(extents.y * 0.5 + fitDistance, 1.2), 0)
-            camera.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
-            anchor.addChild(camera)
-
-            view.scene.addAnchor(anchor)
-            view.installGestures([.translation, .rotation, .scale], for: model)
-            context.coordinator.loadedURL = url
-            context.coordinator.roomModel = model
-        } catch {
-            // AppStore validates/downloads the attachment before this view is
-            // shown. A malformed local package simply leaves an empty viewer;
-            // the surrounding retry state remains the source of truth.
+        if let model = RoomPlanModelCache.clone(for: url) {
+            install(model, into: view, context: context)
+            return
         }
+
+        context.coordinator.modelLoadCancellable = ModelEntity.loadModelAsync(contentsOf: url)
+            .sink(receiveCompletion: { [weak coordinator = context.coordinator] _ in
+                guard let coordinator, coordinator.loadingURL == url else { return }
+                coordinator.loadingURL = nil
+                coordinator.modelLoadCancellable = nil
+            }, receiveValue: { [weak coordinator = context.coordinator] model in
+                guard let coordinator, coordinator.loadingURL == url else { return }
+                install(model, into: view, context: context)
+                coordinator.modelLoadCancellable = nil
+            })
+    }
+
+    private func install(_ model: ModelEntity, into view: ARView, context: Context) {
+        let bounds = model.visualBounds(relativeTo: model)
+        let center = bounds.center
+        let extents = bounds.extents
+        model.position = SIMD3<Float>(-center.x, -center.y, -center.z)
+
+        let anchor = AnchorEntity(world: .zero)
+        anchor.addChild(model)
+
+        let camera = PerspectiveCamera()
+        camera.camera.fieldOfViewInDegrees = 46
+        let halfSpan = max(max(extents.x, extents.z) * 0.5, 0.4)
+        let halfFOV = Float.pi * 46 / 360
+        let fitDistance = halfSpan / max(tanf(halfFOV), 0.1) * 1.2
+        camera.position = SIMD3<Float>(0, max(extents.y * 0.5 + fitDistance, 1.2), 0)
+        camera.orientation = simd_quatf(angle: -.pi / 2, axis: SIMD3<Float>(1, 0, 0))
+        anchor.addChild(camera)
+
+        view.scene.addAnchor(anchor)
+        context.coordinator.loadedURL = url
+        context.coordinator.loadingURL = nil
+        context.coordinator.roomModel = model
+        view.installGestures([.translation, .rotation, .scale], for: model)
+        updateOverlays(context: context)
     }
 
     private func updateOverlays(context: Context) {

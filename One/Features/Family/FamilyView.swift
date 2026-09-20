@@ -1,4 +1,10 @@
 import SwiftUI
+import AVFoundation
+import Combine
+import CoreImage
+import ImageIO
+import UIKit
+import Vision
 
 struct FamilyView: View {
     @Bindable var store: AppStore
@@ -29,14 +35,14 @@ struct FamilyView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showCareRecipientSheet) {
-                CareRecipientEditorSheet(
+                CareRecipientWizardSheet(
                     store: store,
                     recipient: nil,
                     canEdit: store.canManageCareRecipients
                 )
             }
             .sheet(item: $editingCareRecipient) { recipient in
-                CareRecipientEditorSheet(
+                CareRecipientWizardSheet(
                     store: store,
                     recipient: recipient,
                     canEdit: store.canManageCareRecipients
@@ -669,6 +675,11 @@ private struct CareRecipientRow: View {
                         .font(.caption)
                         .foregroundStyle(OneTheme.secondaryInk)
                 }
+                if let faceStatus = recipient.faceRecognitionStatus {
+                    Label(faceStatus.title, systemImage: faceStatus == .ready ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.questionmark")
+                        .font(.caption)
+                        .foregroundStyle(faceStatus == .ready ? OneTheme.mint : OneTheme.secondaryInk)
+                }
             }
 
             Spacer(minLength: 12)
@@ -817,6 +828,740 @@ private struct CareRecipientEditorSheet: View {
             saved = await store.createCareRecipient(name: trimmedName, relationship: relationship, roomLabel: roomLabel)
         }
         if saved { dismiss() }
+    }
+}
+
+private enum FaceEnrollmentCameraPosition: String, CaseIterable, Identifiable, Sendable {
+    case front
+    case back
+
+    var id: String { rawValue }
+
+    var title: String { rawValue.capitalized }
+
+    var symbol: String {
+        switch self {
+        case .front: "camera.front.viewfinder"
+        case .back: "camera.viewfinder"
+        }
+    }
+
+    var capturePosition: AVCaptureDevice.Position {
+        self == .front ? .front : .back
+    }
+}
+
+private enum FaceCameraPermission: Equatable {
+    case unknown
+    case authorized
+    case denied
+}
+
+private enum FaceEnrollmentStage: Equatable, Sendable {
+    case ready
+    case center
+    case turnRight
+    case turnLeft
+    case complete
+
+    var title: String {
+        switch self {
+        case .ready: "Ready when they are"
+        case .center: "Look straight ahead"
+        case .turnRight: "Turn slowly right"
+        case .turnLeft: "Turn slowly left"
+        case .complete: "Guided capture complete"
+        }
+    }
+
+    var instruction: String {
+        switch self {
+        case .ready: "Hand the phone to the cared-for person, then start the guided capture."
+        case .center: "Keep the face inside the circle and look toward the camera."
+        case .turnRight: "Keep the face inside the circle and slowly turn to the right."
+        case .turnLeft: "Slowly turn to the left for the final side view."
+        case .complete: "The three guided views are ready to review."
+        }
+    }
+
+    func accepts(yaw: Double?) -> Bool {
+        guard let yaw else { return true }
+        switch self {
+        case .ready, .complete:
+            return false
+        case .center:
+            return abs(yaw) <= 0.18
+        case .turnRight, .turnLeft:
+            return abs(yaw) >= 0.18
+        }
+    }
+}
+
+private struct FaceEnrollmentSample: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let frameBase64: String
+    let width: Int
+    let height: Int
+    let cameraPosition: FaceEnrollmentCameraPosition
+
+    var request: FaceEnrollmentFrameRequest {
+        FaceEnrollmentFrameRequest(
+            frameBase64: frameBase64,
+            width: width,
+            height: height,
+            cameraPosition: cameraPosition.rawValue
+        )
+    }
+}
+
+private final class FaceEnrollmentCameraModel: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    let session = AVCaptureSession()
+
+    @Published private(set) var samples: [FaceEnrollmentSample] = []
+    @Published private(set) var permission: FaceCameraPermission = .unknown
+    @Published private(set) var message = FaceEnrollmentStage.ready.instruction
+    @Published private(set) var isConfigured = false
+    @Published private(set) var position: FaceEnrollmentCameraPosition = .front
+    @Published private(set) var stage: FaceEnrollmentStage = .ready
+    @Published private(set) var isCapturing = false
+
+    private let sessionQueue = DispatchQueue(label: "one.face-enrollment.camera", qos: .userInitiated)
+    private let imageContext = CIContext()
+    private var output: AVCaptureVideoDataOutput?
+    private var configuredPosition: AVCaptureDevice.Position = .front
+    private var lastCaptureAt = Date.distantPast
+    private let maximumSamples = 6
+    private var firstSideYawSign: Double?
+
+    func start() {
+        let authorization = AVCaptureDevice.authorizationStatus(for: .video)
+        switch authorization {
+        case .authorized:
+            permission = .authorized
+            configureAndStart(for: position)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.permission = granted ? .authorized : .denied
+                    if granted { self.configureAndStart(for: self.position) }
+                }
+            }
+        default:
+            permission = .denied
+            message = "Camera access is off. Enable it in Settings to collect recognition samples."
+        }
+    }
+
+    func stop() {
+        sessionQueue.async { [weak self] in
+            guard let self, self.session.isRunning else { return }
+            self.session.stopRunning()
+        }
+    }
+
+    func resetSamples() {
+        samples.removeAll()
+        stage = .ready
+        isCapturing = false
+        firstSideYawSign = nil
+        message = FaceEnrollmentStage.ready.instruction
+        lastCaptureAt = .distantPast
+    }
+
+    func startCapture() {
+        guard permission == .authorized, isConfigured else {
+            message = "Allow camera access before starting the guided capture."
+            return
+        }
+        samples.removeAll()
+        stage = .center
+        isCapturing = true
+        firstSideYawSign = nil
+        lastCaptureAt = .distantPast
+        message = FaceEnrollmentStage.center.instruction
+    }
+
+    func setPosition(_ newPosition: FaceEnrollmentCameraPosition) {
+        guard position != newPosition else { return }
+        resetSamples()
+        position = newPosition
+        guard permission == .authorized else { return }
+        configureAndStart(for: newPosition)
+    }
+
+    private func configureAndStart(for requestedPosition: FaceEnrollmentCameraPosition) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: requestedPosition.capturePosition)
+            guard let device else {
+                DispatchQueue.main.async { self.message = "This device does not have the selected camera." }
+                return
+            }
+            do {
+                let input = try AVCaptureDeviceInput(device: device)
+                self.session.beginConfiguration()
+                self.session.inputs.forEach { self.session.removeInput($0) }
+                if let output = self.output { self.session.removeOutput(output) }
+                guard self.session.canAddInput(input) else {
+                    self.session.commitConfiguration()
+                    DispatchQueue.main.async { self.message = "The selected camera is unavailable right now." }
+                    return
+                }
+                self.session.addInput(input)
+                let videoOutput = AVCaptureVideoDataOutput()
+                videoOutput.alwaysDiscardsLateVideoFrames = true
+                videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+                videoOutput.setSampleBufferDelegate(self, queue: self.sessionQueue)
+                guard self.session.canAddOutput(videoOutput) else {
+                    self.session.commitConfiguration()
+                    DispatchQueue.main.async { self.message = "The selected camera cannot provide a live preview." }
+                    return
+                }
+                self.session.addOutput(videoOutput)
+                self.output = videoOutput
+                self.configuredPosition = requestedPosition.capturePosition
+                self.session.commitConfiguration()
+                if !self.session.isRunning { self.session.startRunning() }
+                DispatchQueue.main.async { self.isConfigured = true }
+            } catch {
+                DispatchQueue.main.async { self.message = "The selected camera could not be started." }
+            }
+        }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard isCapturing, samples.count < maximumSamples, stage != .ready, stage != .complete else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastCaptureAt) >= 0.75 else { return }
+
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let faceRequest = VNDetectFaceRectanglesRequest()
+        let qualityRequest = VNDetectFaceCaptureQualityRequest()
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
+        do {
+            try handler.perform([faceRequest, qualityRequest])
+        } catch {
+            return
+        }
+        guard let faces = faceRequest.results, faces.count == 1, let face = faces.first else {
+            publishMessage("Show one face at a time, looking toward the camera.")
+            return
+        }
+        let box = face.boundingBox
+        let quality = (qualityRequest.results?.first as? VNFaceObservation)?.faceCaptureQuality ?? 0
+        guard box.width >= 0.16, box.height >= 0.16, quality >= 0.18 else {
+            publishMessage("Move a little closer and use even light on the face.")
+            return
+        }
+        let yaw = face.yaw?.doubleValue
+        guard stage.accepts(yaw: yaw) else {
+            publishMessage(stage.instruction)
+            return
+        }
+        if stage == .turnRight, let yaw, abs(yaw) >= 0.18 {
+            firstSideYawSign = yaw < 0 ? -1 : 1
+        }
+        if stage == .turnLeft, let yaw, let firstSideYawSign, (yaw < 0 ? -1 : 1) == firstSideYawSign {
+            publishMessage("Now turn slowly to the opposite side for the final view.")
+            return
+        }
+        guard let jpeg = makeJPEG(from: pixelBuffer) else { return }
+        lastCaptureAt = now
+        let capturedStage = stage
+        let sample = FaceEnrollmentSample(
+            frameBase64: jpeg.base64EncodedString(),
+            width: CVPixelBufferGetWidth(pixelBuffer),
+            height: CVPixelBufferGetHeight(pixelBuffer),
+            cameraPosition: configuredPosition == .front ? .front : .back
+        )
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.samples.count < self.maximumSamples else { return }
+            self.samples.append(sample)
+            switch capturedStage {
+            case .center:
+                self.stage = .turnRight
+                self.message = FaceEnrollmentStage.turnRight.instruction
+            case .turnRight:
+                self.stage = .turnLeft
+                self.message = FaceEnrollmentStage.turnLeft.instruction
+            case .turnLeft:
+                self.stage = .complete
+                self.isCapturing = false
+                self.message = FaceEnrollmentStage.complete.instruction
+            case .ready, .complete:
+                break
+            }
+        }
+    }
+
+    private func makeJPEG(from pixelBuffer: CVPixelBuffer) -> Data? {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        guard let cgImage = imageContext.createCGImage(image, from: image.extent) else { return nil }
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.72)
+    }
+
+    private func publishMessage(_ text: String) {
+        DispatchQueue.main.async { [weak self] in self?.message = text }
+    }
+}
+
+private struct FaceEnrollmentPreview: UIViewRepresentable {
+    let session: AVCaptureSession
+    let mirrored: Bool
+
+    func makeUIView(context: Context) -> FaceEnrollmentPreviewView {
+        let view = FaceEnrollmentPreviewView()
+        view.previewLayer.session = session
+        view.previewLayer.videoGravity = .resizeAspectFill
+        return view
+    }
+
+    func updateUIView(_ uiView: FaceEnrollmentPreviewView, context: Context) {
+        uiView.previewLayer.session = session
+        uiView.previewLayer.connection?.automaticallyAdjustsVideoMirroring = false
+        uiView.previewLayer.connection?.isVideoMirrored = mirrored
+    }
+}
+
+private final class FaceEnrollmentPreviewView: UIView {
+    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+
+    var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+}
+
+private struct FaceGuideOverlay: View {
+    let stage: FaceEnrollmentStage
+    let isCapturing: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let diameter = min(proxy.size.width * 0.72, proxy.size.height * 0.82)
+            ZStack {
+                Circle()
+                    .fill(.black.opacity(0.12))
+                    .frame(width: diameter, height: diameter)
+                Circle()
+                    .stroke(stage == .complete ? OneTheme.mint : OneTheme.accentBlue, lineWidth: 3)
+                    .frame(width: diameter, height: diameter)
+                Circle()
+                    .stroke(.white.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [8, 7]))
+                    .frame(width: diameter + 14, height: diameter + 14)
+                VStack(spacing: 4) {
+                    Spacer()
+                    Text(stage.title)
+                        .font(.caption.weight(.bold))
+                    Text(isCapturing ? stage.instruction : FaceEnrollmentStage.ready.instruction)
+                        .font(.caption2)
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 14)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct CareRecipientWizardSheet: View {
+    @Bindable var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let recipient: CareRecipient?
+    let canEdit: Bool
+
+    @FocusState private var nameFocused: Bool
+    @State private var step = 0
+    @State private var name: String
+    @State private var relationship: String
+    @State private var roomLabel: String
+    @State private var medicationRemindersEnabled: Bool
+    @State private var faceChoice: Bool?
+    @State private var isSaving = false
+    @StateObject private var camera = FaceEnrollmentCameraModel()
+
+    init(store: AppStore, recipient: CareRecipient?, canEdit: Bool) {
+        self.store = store
+        self.recipient = recipient
+        self.canEdit = canEdit
+        _name = State(initialValue: recipient?.displayName ?? "")
+        _relationship = State(initialValue: recipient?.relationship ?? "")
+        _roomLabel = State(initialValue: recipient?.roomLabel ?? "")
+        _medicationRemindersEnabled = State(initialValue: recipient?.medicationRemindersEnabled == true)
+        _faceChoice = State(initialValue: recipient?.faceRecognitionStatus == .ready ? true : nil)
+    }
+
+    private var isEditing: Bool { recipient != nil }
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var currentSetting: CareSetting { store.activeCareSpace?.careSetting ?? .home }
+    private var totalSteps: Int { faceChoice == true ? 4 : 3 }
+    private var isCaptureStep: Bool { faceChoice == true && step == 2 }
+    private var isReviewStep: Bool { step == totalSteps - 1 }
+    private var canContinue: Bool {
+        guard canEdit, !isSaving, !store.isCareRecipientMutating else { return false }
+        switch step {
+        case 0: return !trimmedName.isEmpty
+        case 1: return faceChoice != nil
+        case 2 where isCaptureStep: return camera.samples.count >= 3
+        default: return true
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                wizardProgress
+                Form { stepContent }
+                    .scrollDismissesKeyboard(.interactively)
+                    .scrollContentBackground(.hidden)
+                    .background(OneTheme.canvas.ignoresSafeArea())
+                    .disabled(!canEdit || isSaving)
+            }
+            .background(OneTheme.canvas.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom, spacing: 0) { wizardFooter }
+            .navigationTitle(canEdit ? (isEditing ? "Edit person" : "Add person") : "Person profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(canEdit ? "Cancel" : "Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                nameFocused = canEdit && recipient == nil
+                if !canEdit { faceChoice = recipient?.faceRecognitionStatus == .ready }
+            }
+            .onChange(of: step) { _, newValue in
+                if newValue == 2 && isCaptureStep { camera.start() } else { camera.stop() }
+            }
+            .onDisappear {
+                camera.stop()
+                store.clearCareRecipientError()
+            }
+            .onChange(of: name) { _, value in if value.count > 120 { name = String(value.prefix(120)) } }
+            .onChange(of: relationship) { _, value in if value.count > 120 { relationship = String(value.prefix(120)) } }
+            .onChange(of: roomLabel) { _, value in if value.count > 120 { roomLabel = String(value.prefix(120)) } }
+        }
+    }
+
+    @ViewBuilder
+    private var stepContent: some View {
+        switch step {
+        case 0: detailsStep
+        case 1: recognitionStep
+        case 2 where isCaptureStep: captureStep
+        default: reviewStep
+        }
+    }
+
+    private var wizardProgress: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(stepTitle.uppercased())
+                    .font(.caption.weight(.bold))
+                    .tracking(1.2)
+                    .foregroundStyle(OneTheme.accentBlue)
+                Spacer()
+                Text("Step \(min(step + 1, totalSteps)) of \(totalSteps)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+            ProgressView(value: Double(min(step + 1, totalSteps)), total: Double(totalSteps))
+                .tint(OneTheme.accentBlue)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+        .background(OneTheme.canvas)
+    }
+
+    private var stepTitle: String {
+        switch step {
+        case 0: "Care details"
+        case 1: "Recognition choice"
+        case 2 where isCaptureStep: "Capture face"
+        default: "Review"
+        }
+    }
+
+    private var detailsStep: some View {
+        Group {
+            Section {
+                TextField("Name", text: $name)
+                    .textContentType(.name)
+                    .focused($nameFocused)
+                TextField("Relationship (optional)", text: $relationship)
+                TextField(currentSetting == .residence ? "Room or unit (optional)" : "Room or area (optional)", text: $roomLabel)
+            } header: {
+                Text("Who is this care profile for?")
+            } footer: {
+                Text(currentSetting == .residence
+                     ? "Room labels help distinguish several people in the same residence."
+                     : "Relationship and room details are optional and can be changed later.")
+            }
+
+            Section {
+                Label("This person is part of the care context only.", systemImage: "person.crop.circle.badge.checkmark")
+                Text("Adding someone here does not create a ONE login, household membership, or app permissions.")
+                    .font(.footnote)
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+
+            if recipient != nil {
+                Section("Medication") {
+                    Toggle("Medication reminders", isOn: $medicationRemindersEnabled)
+                        .tint(OneTheme.accentBlue)
+                    Text("Allows this care space to create recurring medication reminders and record who marks them done.")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+            }
+
+            if let error = store.careRecipientError {
+                Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(OneTheme.amber) }
+            }
+        }
+    }
+
+    private var recognitionStep: some View {
+        Group {
+            Section {
+                recognitionChoiceButton(
+                    title: "Set up recognition",
+                    detail: "Use this iPhone to learn a local face template so the system can distinguish this person from an unknown person.",
+                    symbol: "person.crop.circle.badge.checkmark",
+                    selected: faceChoice == true
+                ) { faceChoice = true }
+                recognitionChoiceButton(
+                    title: "Not now",
+                    detail: "Presence tracking can remain anonymous. You can set this up later from this person’s profile.",
+                    symbol: "person.crop.circle.badge.questionmark",
+                    selected: faceChoice == false
+                ) { faceChoice = false }
+            } header: {
+                Text("Identify this person in the camera view?")
+            } footer: {
+                Text("Recognition is optional, local to this care space, and uses derived face embeddings only. Raw enrollment photos and live frames are not stored.")
+            }
+
+            Section {
+                Label("Caregiver-controlled", systemImage: "lock.shield")
+                Text("Only a caregiver or admin can add, change, or turn off recognition. An unknown person is never guessed as someone in this care space.")
+                    .font(.footnote)
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+        }
+    }
+
+    private func recognitionChoiceButton(title: String, detail: String, symbol: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.title3)
+                    .foregroundStyle(selected ? OneTheme.accentBlue : OneTheme.secondaryInk)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.headline).foregroundStyle(OneTheme.ink)
+                    Text(detail).font(.footnote).foregroundStyle(OneTheme.secondaryInk)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(selected ? OneTheme.accentBlue : OneTheme.secondaryInk.opacity(0.45))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var captureStep: some View {
+        Group {
+            Section {
+                FaceEnrollmentPreview(session: camera.session, mirrored: camera.position == .front)
+                    .frame(height: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay { FaceGuideOverlay(stage: camera.stage, isCapturing: camera.isCapturing) }
+                    .overlay(alignment: .topLeading) {
+                        Label(camera.isCapturing ? "Capturing" : "Preview only", systemImage: camera.isCapturing ? "circle.fill" : "eye")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(.black.opacity(0.55), in: Capsule())
+                            .padding(12)
+                    }
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 10, trailing: 0))
+            } header: {
+                Text("One person at a time")
+            }
+
+            Section {
+                Picker("Camera", selection: Binding(
+                    get: { camera.position },
+                    set: { camera.setPosition($0) }
+                )) {
+                    ForEach(FaceEnrollmentCameraPosition.allCases) { position in
+                        Label(position.title, systemImage: position.symbol).tag(position)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if camera.stage == .ready || camera.stage == .complete {
+                    Button {
+                        camera.startCapture()
+                    } label: {
+                        Label(camera.stage == .complete ? "Capture again" : "Start guided capture", systemImage: camera.stage == .complete ? "arrow.counterclockwise" : "play.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(OnePrimaryButtonStyle())
+                    .disabled(camera.permission != .authorized || !camera.isConfigured)
+                    .accessibilityIdentifier("face-enrollment-start")
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: camera.samples.count >= 3 ? "checkmark.circle.fill" : "camera.circle")
+                        .foregroundStyle(camera.samples.count >= 3 ? OneTheme.mint : OneTheme.accentBlue)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(camera.samples.count) of 3 guided views")
+                            .font(.headline)
+                        Text(camera.message)
+                            .font(.footnote)
+                            .foregroundStyle(OneTheme.secondaryInk)
+                    }
+                }
+
+                if camera.permission == .denied {
+                    Label("Camera access is required for this optional step. You can go back and choose Not now.", systemImage: "camera.slash")
+                        .font(.footnote)
+                        .foregroundStyle(OneTheme.amber)
+                }
+
+                if !camera.samples.isEmpty && camera.stage != .complete {
+                    Button("Retake samples", role: .destructive) { camera.resetSamples() }
+                        .font(.footnote.weight(.semibold))
+                }
+            } header: {
+                Text("Capture")
+            } footer: {
+                Text("Hand the phone to the cared-for person before tapping Start. The guide captures a centered view, then one slow turn right and one slow turn left. Changing cameras resets the guided capture. Samples stay in memory until this setup is submitted or cancelled.")
+            }
+        }
+    }
+
+    private var reviewStep: some View {
+        Group {
+            Section("Review this care profile") {
+                reviewRow(label: "Name", value: trimmedName)
+                reviewRow(label: "Relationship", value: relationship.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Not added" : relationship)
+                reviewRow(label: "Room or area", value: roomLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Not added" : roomLabel)
+            }
+
+            Section("Recognition") {
+                if faceChoice == true {
+                    Label("Ready to set up with \(camera.samples.count) temporary samples", systemImage: "person.crop.circle.badge.checkmark")
+                        .foregroundStyle(OneTheme.accentBlue)
+                } else {
+                    Label("Presence stays anonymous for now", systemImage: "person.crop.circle.badge.questionmark")
+                        .foregroundStyle(OneTheme.secondaryInk)
+                }
+                Text("Fall detection is not enabled by this setup. This step only prepares identity-aware presence for later safety signals.")
+                    .font(.footnote)
+                    .foregroundStyle(OneTheme.secondaryInk)
+            }
+
+            if let error = store.careRecipientError {
+                Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(OneTheme.amber) }
+            }
+        }
+    }
+
+    private func reviewRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label).foregroundStyle(OneTheme.secondaryInk)
+            Spacer()
+            Text(value).foregroundStyle(OneTheme.ink).multilineTextAlignment(.trailing)
+        }
+    }
+
+    private var wizardFooter: some View {
+        HStack(spacing: 12) {
+            Button("Back") { goBack() }
+                .buttonStyle(.bordered)
+                .tint(OneTheme.accentBlue)
+                .accessibilityIdentifier("care-recipient-back")
+            Spacer()
+            Button {
+                Task { await advance() }
+            } label: {
+                HStack(spacing: 8) {
+                    if isSaving || store.isCareRecipientMutating { ProgressView().controlSize(.small) }
+                    Text(isReviewStep ? (isEditing ? "Save changes" : "Add person") : "Continue")
+                }
+            }
+            .buttonStyle(OnePrimaryButtonStyle())
+            .disabled(!canContinue)
+            .accessibilityIdentifier("care-recipient-continue")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(OneTheme.canvas.ignoresSafeArea(edges: .horizontal))
+    }
+
+    private func goBack() {
+        guard step > 0 else {
+            dismiss()
+            return
+        }
+        step -= 1
+    }
+
+    private func advance() async {
+        guard canContinue else { return }
+        if !isReviewStep {
+            step += 1
+            return
+        }
+        await save()
+    }
+
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        defer { isSaving = false }
+        let relationshipValue = relationship.trimmingCharacters(in: .whitespacesAndNewlines)
+        let roomValue = roomLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let relationshipValueOptional = relationshipValue.isEmpty ? nil : relationshipValue
+        let roomValueOptional = roomValue.isEmpty ? nil : roomValue
+
+        let saved: Bool
+        if let recipient {
+            saved = await store.updateCareRecipient(recipient, name: trimmedName, relationship: relationshipValueOptional, roomLabel: roomValueOptional)
+        } else {
+            saved = await store.createCareRecipient(name: trimmedName, relationship: relationshipValueOptional, roomLabel: roomValueOptional)
+        }
+        guard saved else { return }
+
+        let savedRecipient = recipient.flatMap { existing in
+            store.careRecipients.first(where: { $0.id == existing.id })
+        } ?? store.careRecipients
+            .filter { $0.displayName == trimmedName }
+            .max { $0.createdAt < $1.createdAt }
+        if let recipient, medicationRemindersEnabled != (recipient.medicationRemindersEnabled == true) {
+            guard await store.setMedicationRemindersEnabled(for: recipient, enabled: medicationRemindersEnabled) else { return }
+        }
+        guard let savedRecipient else {
+            store.careRecipientError = "The person was saved, but the new care profile could not be loaded."
+            return
+        }
+
+        if faceChoice == true {
+            guard await store.enrollFaceProfile(for: savedRecipient, samples: camera.samples.map(\.request)) else { return }
+        } else if recipient?.faceRecognitionStatus == .ready || recipient?.faceRecognitionStatus == .unavailable {
+            guard await store.disableFaceProfile(for: savedRecipient) else { return }
+        }
+        dismiss()
     }
 }
 

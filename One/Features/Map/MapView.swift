@@ -30,7 +30,11 @@ struct MapView: View {
                 .interactiveDismissDisabled()
         }
         .task {
+            // Let the map surface get its first frame before presenting the
+            // evidence sheet and starting the initial network refresh.
+            await Task.yield()
             showEvidence = true
+            await Task.yield()
             while !Task.isCancelled {
                 await store.refreshMapData()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -454,7 +458,10 @@ struct ScanView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.horizontal, 20)
                             .padding(.top, 28)
-                            .padding(.bottom, 24)
+                            // The setup footer is fixed in the safe area. Leave
+                            // enough scrollable tail space for the last text or
+                            // card to clear both buttons and the home indicator.
+                            .padding(.bottom, 112)
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
