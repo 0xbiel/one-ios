@@ -50,17 +50,17 @@ struct LoginView: View {
 
     private var modeTitle: String {
         switch mode {
-        case 1: "Create a care space."
-        case 2: "Join a care space."
-        default: "Sign in to your care space."
+        case 1: "Create a care space"
+        case 2: "Join a care space"
+        default: "Sign in"
         }
     }
 
     private var modeDescription: String {
         switch mode {
-        case 1: "Set up ONE for a private home or residence, with optional MCI-focused support around the person’s own baseline."
+        case 1: "For a home or residence."
         case 2: "Enter the one-time invitation from a caregiver."
-        default: "Use your email or a one-time pairing code to open your care space."
+        default: "Use your email or a pairing code."
         }
     }
 
@@ -170,24 +170,12 @@ struct LoginView: View {
 
     private var welcomeContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("PRIVATE CARE, MADE CLEAR")
-                .font(.caption.weight(.bold))
-                .tracking(1.2)
-                .foregroundStyle(OneTheme.cyan)
-
             Text("A calmer way to stay connected.")
                 .font(.system(size: 38, weight: .semibold, design: .default))
                 .tracking(-1.25)
                 .foregroundStyle(OneTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 10)
-
-            Text("Sign in to an existing care space, create one for your care circle, or join with an invitation.")
-                .font(.body)
-                .foregroundStyle(OneTheme.secondaryInk)
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 14)
 
             VStack(spacing: 12) {
                 Button {
@@ -218,7 +206,7 @@ struct LoginView: View {
                     openForm(mode: 2)
                 } label: {
                     HStack {
-                        Text("Join with an invite")
+                        Text("Join with invite")
                         Spacer()
                         Image(systemName: "person.2")
                     }
@@ -233,7 +221,7 @@ struct LoginView: View {
             }
             .padding(.top, 36)
 
-            Label("Your care-space data stays scoped to the people and purposes you choose.", systemImage: "lock")
+            Label("Share only with the people and purposes you choose.", systemImage: "lock")
                 .font(.caption)
                 .foregroundStyle(OneTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
@@ -248,10 +236,6 @@ struct LoginView: View {
                 confirmationContent
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(mode == 2 ? "CARE-SPACE INVITATION" : mode == 1 ? "CREATE YOUR CARE SPACE" : "WELCOME BACK")
-                        .font(.caption.weight(.bold))
-                        .tracking(1.2)
-                        .foregroundStyle(OneTheme.cyan)
                     Text(modeTitle)
                         .font(.system(size: 34, weight: .semibold, design: .default))
                         .tracking(-1.1)
@@ -423,7 +407,7 @@ struct LoginView: View {
                                 Text("Residence").tag("residence")
                             }
                             .pickerStyle(.segmented)
-                            Text(careSetting == "residence" ? "For assisted living, residential care, or another staffed setting." : "For a person living at home with family or caregiver support.")
+                            Text(careSetting == "residence" ? "A staffed or shared care setting." : "A private home and its care circle.")
                                 .font(.caption)
                                 .foregroundStyle(OneTheme.secondaryInk)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -440,7 +424,7 @@ struct LoginView: View {
                                 Text("General").tag("general")
                             }
                             .pickerStyle(.segmented)
-                            Text(supportFocus == "mci" ? "Tailor daily check-ins and explanations for mild cognitive impairment support without diagnosing or replacing clinical care." : "Use ONE for general cognitive and daily-routine support.")
+                            Text(supportFocus == "mci" ? "Check-ins for memory support; no diagnosis or clinical care." : "Everyday routines and check-ins.")
                                 .font(.caption)
                                 .foregroundStyle(OneTheme.secondaryInk)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -603,7 +587,7 @@ struct LoginView: View {
                 .foregroundStyle(OneTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
         } else if mode == 0 && signInMethod == .email {
-            Text("No password required. ONE uses a short-lived email code.")
+            Text("Sign in with a short-lived email code.")
                 .font(.caption)
                 .foregroundStyle(OneTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)

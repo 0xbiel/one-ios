@@ -253,6 +253,8 @@ struct RoomObject: Codable, Identifiable, Sendable {
     let cameraID: UUID?
     let observedAt: Date?
     let presenceState: PersonPresenceState?
+    let identityStatus: String?
+    let identityName: String?
 
     init(
         id: UUID,
@@ -265,7 +267,9 @@ struct RoomObject: Codable, Identifiable, Sendable {
         mapID: UUID? = nil,
         cameraID: UUID? = nil,
         observedAt: Date? = nil,
-        presenceState: PersonPresenceState? = nil
+        presenceState: PersonPresenceState? = nil,
+        identityStatus: String? = nil,
+        identityName: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -278,6 +282,8 @@ struct RoomObject: Codable, Identifiable, Sendable {
         self.cameraID = cameraID
         self.observedAt = observedAt
         self.presenceState = presenceState
+        self.identityStatus = identityStatus
+        self.identityName = identityName
     }
 }
 
@@ -314,6 +320,7 @@ enum MapSource: String, Codable, Sendable {
     case cameraCV2D = "camera-cv-2d"
     case roomplanLidar3D = "roomplan-lidar-3d"
     case arkitVideo3D = "arkit-video-3d"
+    case imported3D = "imported-3d"
     case legacy2D = "legacy-2d"
 }
 
@@ -335,6 +342,15 @@ struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
     let name: String
     let roomID: UUID?
     let status: String
+    let simulationStatus: String?
+
+    var simulationLabel: String? {
+        switch simulationStatus {
+        case "simulated_online": "Simulated online"
+        case "simulated_offline": "Simulated offline"
+        default: nil
+        }
+    }
     let calibrationNeeded: Bool
     let roomplanRegistrationStatus: String
     let roomplanMapID: UUID?
@@ -344,6 +360,7 @@ struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
         name: String,
         roomID: UUID?,
         status: String,
+        simulationStatus: String? = nil,
         calibrationNeeded: Bool = false,
         roomplanRegistrationStatus: String = "map_required",
         roomplanMapID: UUID? = nil
@@ -352,6 +369,7 @@ struct PairedCamera: Identifiable, Codable, Sendable, Equatable {
         self.name = name
         self.roomID = roomID
         self.status = status
+        self.simulationStatus = simulationStatus
         self.calibrationNeeded = calibrationNeeded
         self.roomplanRegistrationStatus = roomplanRegistrationStatus
         self.roomplanMapID = roomplanMapID
@@ -504,7 +522,7 @@ struct SceneDescriptor: Decodable, Sendable, Equatable {
         switch source {
         case .roomplanLidar3D:
             return canonicalGeometry != nil
-        case .arkitVideo3D:
+        case .arkitVideo3D, .imported3D:
             return usdz?.available == true
         case .cameraCV2D, .legacy2D:
             return false

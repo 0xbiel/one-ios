@@ -12,24 +12,24 @@ struct OnboardingView: View {
     private let pages = [
         OneOnboardingPage(
             eyebrow: "A clear view, with consent",
-            title: "Support a calmer daily check-in.",
-            body: "Use room and camera context in a private home or residence to help the care circle notice familiar routines and compare with the person’s own baseline.",
+            title: "Understand daily routines.",
+            body: "Allow room and camera data to help your care circle notice changes in familiar routines.",
             purpose: "Room and camera data",
             symbol: "camera.viewfinder",
             tint: OneTheme.accentCyan
         ),
         OneOnboardingPage(
             eyebrow: "Natural conversations",
-            title: "Make answers feel easy.",
-            body: "Use the microphone for a gentle conversation when someone chooses to press and hold to talk, including daily MCI support without turning observations into a diagnosis.",
+            title: "Check in with a conversation.",
+            body: "Allow microphone use when someone chooses to talk. Check-ins support care; they do not provide a diagnosis.",
             purpose: "Daily check-in support",
             symbol: "waveform",
             tint: OneTheme.accentBlue
         ),
         OneOnboardingPage(
             eyebrow: "Share care, intentionally",
-            title: "Keep trusted people close.",
-            body: "Share selected context with trusted family, caregivers, or residence staff, with clear roles and purpose-specific access.",
+            title: "Choose who can help.",
+            body: "Share selected context with trusted family or care staff, with access limited by role and purpose.",
             purpose: "Family sharing",
             symbol: "person.2.fill",
             tint: OneTheme.mint
@@ -59,11 +59,6 @@ struct OnboardingView: View {
                             .id(pageIndex)
 
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(page.eyebrow.uppercased())
-                                .font(.caption.weight(.bold))
-                                .tracking(1.2)
-                                .foregroundStyle(page.tint)
-
                             Text(page.title)
                                 .font(.system(size: 30, weight: .semibold, design: .default))
                                 .tracking(-0.9)

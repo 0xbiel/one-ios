@@ -11,18 +11,11 @@ struct EventsView: View {
                     Text("Events · \(store.selectedSubjectName)")
                         .font(.system(size: 38, weight: .bold, design: .rounded))
                         .tracking(-1)
-                    Text("A reviewable record of observed moments.")
-                        .font(.subheadline)
-                        .foregroundStyle(OneTheme.secondaryInk)
-                    SafetyAnalyticsCard(events: store.events)
                     if store.events.isEmpty {
                         SurfaceCard(radius: 24) {
                             Label {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("No observations yet").font(.headline)
-                                    Text("Recorded backend events will appear here when this household has them.")
-                                        .font(.subheadline)
-                                        .foregroundStyle(OneTheme.secondaryInk)
                                 }
                             } icon: {
                                 Image(systemName: "tray").font(.title2).foregroundStyle(OneTheme.accentBlue)
@@ -42,54 +35,6 @@ struct EventsView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 88) }
             .toolbar(.hidden, for: .navigationBar)
         }
-    }
-}
-
-struct SafetyAnalyticsCard: View {
-    let events: [ObservedEvent]
-
-    private var recentEvents: [ObservedEvent] {
-        let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
-        return events.filter { $0.timestamp >= cutoff }
-    }
-
-    private var fallSignals: [ObservedEvent] { recentEvents.filter { $0.kind == .fallSuspected } }
-    private var checkInsToday: Int {
-        recentEvents.filter { $0.kind == .checkIn && Calendar.current.isDateInToday($0.timestamp) }.count
-    }
-
-    var body: some View {
-        SurfaceCard(radius: 24) {
-            VStack(alignment: .leading, spacing: 13) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("30-DAY CONTEXT").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(OneTheme.secondaryInk)
-                        Text("Safety signals").font(.title3.weight(.bold)).foregroundStyle(OneTheme.ink)
-                    }
-                    Spacer()
-                    Image(systemName: "chart.bar.xaxis").foregroundStyle(OneTheme.accentBlue)
-                }
-                HStack(spacing: 9) {
-                    metric("\(fallSignals.count)", "fall signals")
-                    metric("\(fallSignals.filter { !$0.reviewed }.count)", "need review")
-                    metric("\(checkInsToday)", "check-in today")
-                }
-                Text(fallSignals.isEmpty ? "No fall-safety signals are recorded in this window." : "Safety signals are heuristic observations for caregiver review, not diagnoses.")
-                    .font(.footnote)
-                    .foregroundStyle(fallSignals.isEmpty ? OneTheme.secondaryInk : OneTheme.amber)
-            }
-            .padding(18)
-        }
-    }
-
-    private func metric(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value).font(.title2.weight(.bold)).foregroundStyle(OneTheme.ink)
-            Text(label).font(.caption2).foregroundStyle(OneTheme.secondaryInk)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(OneTheme.canvas, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

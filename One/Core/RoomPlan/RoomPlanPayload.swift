@@ -391,7 +391,11 @@ enum RoomPlanNormalizer {
         return try normalize(fixture)
     }
 
-    static func normalize(_ structure: CapturedStructure, capturedAt: Date = Date()) throws -> RoomPlanNormalizedScan {
+    static func normalize(
+        _ structure: CapturedStructure,
+        capturedAt: Date = Date(),
+        roomSections: [RoomPlanSectionInput]? = nil
+    ) throws -> RoomPlanNormalizedScan {
         let fixture = RoomPlanCaptureFixture(
             roomID: nil,
             capturedAt: capturedAt,
@@ -401,7 +405,7 @@ enum RoomPlanNormalizer {
             doors: try structure.doors.map { try input(from: $0) },
             windows: try structure.windows.map { try input(from: $0) },
             objects: try structure.objects.map { try input(from: $0) },
-            sections: structure.sections.map { RoomPlanSectionInput(label: $0.label.rawValue, center: $0.center, story: $0.story) }
+            sections: roomSections ?? structure.sections.map { RoomPlanSectionInput(label: $0.label.rawValue, center: $0.center, story: $0.story) }
         )
         return try normalize(fixture)
     }
@@ -515,8 +519,12 @@ struct NativeRoomPlanArtifact: Sendable {
 }
 
 enum RoomPlanArtifactBuilder {
-    static func build(from structure: CapturedStructure, capturedAt: Date = Date()) throws -> NativeRoomPlanArtifact {
-        let scan = try RoomPlanNormalizer.normalize(structure, capturedAt: capturedAt)
+    static func build(
+        from structure: CapturedStructure,
+        roomSections: [RoomPlanSectionInput]? = nil,
+        capturedAt: Date = Date()
+    ) throws -> NativeRoomPlanArtifact {
+        let scan = try RoomPlanNormalizer.normalize(structure, capturedAt: capturedAt, roomSections: roomSections)
         let metadata = RoomPlanNormalizer.metadata(for: structure)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("one-roomplan-structure-\(structure.identifier.uuidString).usdz")
         defer { try? FileManager.default.removeItem(at: url) }

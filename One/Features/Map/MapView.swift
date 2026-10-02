@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ARKit
 import RoomPlan
 import UIKit
@@ -6,19 +7,40 @@ import UIKit
 struct MapView: View {
     @Bindable var store: AppStore
     @State private var showEvidence = false
+#if DEBUG
+    @State private var evidenceDetent: PresentationDetent = ProcessInfo.processInfo.arguments.contains("-one-map-expanded") ? .large : Self.compactEvidenceDetent
+#else
     @State private var evidenceDetent: PresentationDetent = Self.compactEvidenceDetent
+#endif
     @State private var sheetSelectedTab = "map"
+    @State private var selectedPresence: RoomObject?
+    @State private var selectedCamera: CameraRegistrationDescriptor?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private static let compactEvidenceDetent = PresentationDetent.height(205)
+    private static let compactEvidenceDetent = PresentationDetent.height(140)
 
     var body: some View {
         Group {
             if store.scene.isRenderable3D {
-                RoomPlan3DSceneView(store: store)
+                RoomPlan3DSceneView(
+                    store: store,
+                    onPresenceSelected: { presence in
+                        selectedCamera = nil
+                        selectedPresence = presence
+                        evidenceDetent = .medium
+                    },
+                    onCameraSelected: { camera in
+                        selectedPresence = nil
+                        selectedCamera = camera
+                        evidenceDetent = .medium
+                    }
+                )
             } else {
                 RoomMapCanvas(scan: store.scan)
             }
         }
+        .padding(.bottom, 140)
+        .background(OneTheme.canvas)
         .ignoresSafeArea()
         .sheet(isPresented: $showEvidence) {
             evidenceSheetTabView
@@ -28,6 +50,11 @@ struct MapView: View {
                 .presentationContentInteraction(.scrolls)
                 .presentationBackground(.regularMaterial)
                 .interactiveDismissDisabled()
+        }
+        .onChange(of: dynamicTypeSize, initial: true) { _, size in
+            if size.isAccessibilitySize && evidenceDetent == Self.compactEvidenceDetent {
+                evidenceDetent = .medium
+            }
         }
         .task {
             // Let the map surface get its first frame before presenting the
@@ -47,7 +74,7 @@ struct MapView: View {
             Color.clear
                 .tabItem { Label("Home", systemImage: "house.fill") }
                 .tag("overview")
-            MapEvidenceSheet(store: store)
+            MapEvidenceSheet(store: store, selectedPresence: $selectedPresence, selectedCamera: $selectedCamera, isCompact: evidenceDetent == Self.compactEvidenceDetent)
                 .tabItem { Label("Map", systemImage: "map.fill") }
                 .tag("map")
             Color.clear
@@ -79,102 +106,198 @@ struct RoomMapCanvas: View {
     let scan: RoomScan
     private var labels: [String] { Array((scan.objects.map(\.name) + scan.zones.map(\.name)).prefix(4)) }
 
-    var body: some View { ZStack { LinearGradient(colors: [Color(red: 0.70, green: 0.90, blue: 0.94), Color(red: 0.92, green: 0.95, blue: 0.91)], startPoint: .top, endPoint: .bottom); GeometryReader { _ in Canvas { context, size in for x in stride(from: 0, through: size.width, by: 28) { var p = Path(); p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height)); context.stroke(p, with: .color(.white.opacity(0.3)), lineWidth: 0.6) }; for y in stride(from: 0, through: size.height, by: 28) { var p = Path(); p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: size.width, y: y)); context.stroke(p, with: .color(.white.opacity(0.3)), lineWidth: 0.6) } }.overlay { RoundedRectangle(cornerRadius: 26).stroke(OneTheme.accentBlue.opacity(0.45), lineWidth: 2).padding(.horizontal, 42).padding(.vertical, 180).overlay { if labels.isEmpty { Label("No room map yet", systemImage: "map") .font(.headline) .foregroundStyle(OneTheme.secondaryInk) } else { HStack(spacing: 18) { ForEach(Array(labels.enumerated()), id: \.offset) { index, label in RoomMapPin(title: label, color: index.isMultiple(of: 2) ? OneTheme.accentCyan : OneTheme.accentBlue) } }.padding(.horizontal, 48) } } } } }.accessibilityElement(children: .combine).accessibilityLabel(labels.isEmpty ? "No room map available" : "Room map with \(labels.joined(separator: ", "))") } }
+    var body: some View { ZStack { LinearGradient(colors: [Color(red: 0.70, green: 0.90, blue: 0.94), Color(red: 0.92, green: 0.95, blue: 0.91)], startPoint: .top, endPoint: .bottom); GeometryReader { _ in Canvas { context, size in for x in stride(from: 0, through: size.width, by: 28) { var p = Path(); p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height)); context.stroke(p, with: .color(.white.opacity(0.3)), lineWidth: 0.6) }; for y in stride(from: 0, through: size.height, by: 28) { var p = Path(); p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: size.width, y: y)); context.stroke(p, with: .color(.white.opacity(0.3)), lineWidth: 0.6) } }.overlay { RoundedRectangle(cornerRadius: 26).stroke(OneTheme.accentBlue.opacity(0.45), lineWidth: 2).padding(.horizontal, 42).padding(.vertical, 180).overlay { if labels.isEmpty { Label("No room map yet", systemImage: "map") .font(.headline) .foregroundStyle(OneTheme.secondaryInk) } else { LazyVGrid(columns: [GridItem(.adaptive(minimum: 110))], spacing: 18) { ForEach(Array(labels.enumerated()), id: \.offset) { index, label in RoomMapPin(title: label, color: index.isMultiple(of: 2) ? OneTheme.accentCyan : OneTheme.accentBlue) } }.padding(.horizontal, 48) } } } } }.accessibilityElement(children: .combine).accessibilityLabel(labels.isEmpty ? "No room map available" : "Room map with \(labels.joined(separator: ", "))") } }
 
-struct RoomMapPin: View { let title: String; let color: Color; var body: some View { VStack(spacing: 5) { Circle().fill(color).frame(width: 30, height: 30).overlay(Circle().stroke(.white, lineWidth: 3)).shadow(radius: 6); Text(title).font(.caption.weight(.semibold)).foregroundStyle(OneTheme.ink).padding(.horizontal, 8).padding(.vertical, 4).background(OneTheme.surface, in: Capsule()) } } }
+struct RoomMapPin: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        OneStatusBadge(title: title, symbol: "mappin", tint: color)
+            .background(OneTheme.surface, in: Capsule())
+    }
+}
 
 struct MapEvidenceSheet: View {
     @Bindable var store: AppStore
+    @Binding var selectedPresence: RoomObject?
+    @Binding var selectedCamera: CameraRegistrationDescriptor?
+    let isCompact: Bool
     @State private var showScanSetup = false
     @State private var showRooms = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Home map").font(.largeTitle.weight(.bold)).tracking(-1)
-                            Text(
-                                store.scene.source == .roomplanLidar3D && store.scene.isRenderable3D
-                                    ? "Native RoomPlan · metric 3D"
-                                    : store.scene.source == .arkitVideo3D && store.scene.isRenderable3D
-                                        ? "ARKit video · approximate metric 3D"
-                                        : "Approximate locations · local view"
-                            )
-                                .font(.subheadline)
-                                .foregroundStyle(OneTheme.secondaryInk)
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 12) {
+                            mapTitle
+                            mapActions
                         }
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Button { showRooms = true } label: {
-                                Image(systemName: "square.grid.2x2").font(.title3).frame(width: 44, height: 44)
-                            }
-                            .buttonStyle(.bordered)
-                            .accessibilityLabel("Manage rooms")
-                            Button { showScanSetup = true } label: {
-                                Image(systemName: "viewfinder").font(.title3).frame(width: 44, height: 44)
-                            }
-                            .buttonStyle(.bordered)
-                            .accessibilityLabel("Update room scan")
+                    } else {
+                        HStack {
+                            mapTitle
+                            Spacer()
+                            mapActions
                         }
                     }
 
-                    if store.scene.isRenderable3D {
-                        SurfaceCard(radius: 20) {
-                            Label(
-                                store.scene.source == .roomplanLidar3D
-                                    ? (store.scene.hasReadyUSDZ ? "LiDAR model available" : "LiDAR geometry available · 3D asset pending")
-                                    : (store.scene.hasReadyUSDZ ? "ARKit video model available" : "ARKit geometry available · 3D asset pending"),
-                                systemImage: store.scene.hasReadyUSDZ ? "cube.fill" : "arrow.triangle.2.circlepath"
-                            )
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(OneTheme.accentBlue)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                        }
-                        SurfaceCard(radius: 20) {
+                    if !isCompact {
+                        if !store.cameraRooms.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
-                                Text("Presence on the 3D map")
+                                Text("Rooms")
                                     .font(.subheadline.weight(.semibold))
-                                HStack(spacing: 18) {
-                                    presenceLegendItem(title: "Now", detail: "Seen within ~12 s", opacity: 0.96)
-                                    presenceLegendItem(title: "Recent", detail: "Last seen within ~2 min", opacity: 0.34)
-                                }
-                                Text("ONE keeps one anonymous latest location per person across cameras, so a handoff to another camera or room does not leave a duplicate dot behind.")
-                                    .font(.caption)
-                                    .foregroundStyle(OneTheme.secondaryInk)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(16)
-                        }
-                        if store.scene.source == .roomplanLidar3D {
-                            let registrations = store.scene.cameraRegistrations.isEmpty ? (store.scene.cameraRegistration.map { [$0] } ?? []) : store.scene.cameraRegistrations
-                            if registrations.isEmpty {
-                                CameraRegistrationStatusCard(registration: nil)
-                            } else {
-                                ForEach(Array(registrations.enumerated()), id: \.offset) { _, registration in
-                                    CameraRegistrationStatusCard(registration: registration)
+                                    .foregroundStyle(OneTheme.ink)
+                                ForEach(store.cameraRooms) { room in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(room.name).font(.subheadline.weight(.semibold))
+                                        Text(roomObservationSummary(roomID: room.id)).font(.caption).foregroundStyle(OneTheme.secondaryInk)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                                    .background(OneTheme.controlFill, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                                 }
                             }
+                            .accessibilityIdentifier("map-room-observations")
+                        } else {
+                            Label("No rooms added yet", systemImage: "square.grid.2x2")
+                                .font(.subheadline)
+                                .foregroundStyle(OneTheme.secondaryInk)
                         }
-                    } else if store.events.isEmpty {
-                        SurfaceCard(radius: 20) {
-                            Label("No observations yet", systemImage: "tray").font(.subheadline).foregroundStyle(OneTheme.secondaryInk).padding(16)
-                        }
-                    } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(store.events.prefix(3)) { event in
-                                EventRow(event: event)
-                                if event.id != store.events.prefix(3).last?.id { Divider() }
+                        if selectedPresence != nil || selectedCamera != nil {
+                            SurfaceCard(radius: 20) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("Selected marker").font(.caption).foregroundStyle(OneTheme.secondaryInk)
+                                        Spacer()
+                                        Button {
+                                            selectedPresence = nil
+                                            selectedCamera = nil
+                                        } label: {
+                                            Image(systemName: "xmark").frame(width: 44, height: 44)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("Clear marker selection")
+                                    }
+                                    if let selectedPresence {
+                                        MapPresenceDetails(presence: selectedPresence, store: store)
+                                    } else if let selectedCamera {
+                                        MapCameraDetails(camera: selectedCamera, store: store)
+                                    }
+                                }
+                                .padding(16)
                             }
+                            .accessibilityIdentifier("map-marker-details")
+                        }
+
+                        if store.scene.isRenderable3D {
+                            SurfaceCard(radius: 20) {
+                                DisclosureGroup("Map details") {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                    Text("Coverage unknown").font(.subheadline)
+                                    Text("Neutral floors have no validated coverage measurement. Blue and red require current, validated visible floor data; stale observations do not show whether a room is empty.").font(.footnote).foregroundStyle(OneTheme.secondaryInk)
+                                    Text("Marker key").font(.caption.weight(.semibold)).foregroundStyle(OneTheme.secondaryInk)
+                                    LazyVGrid(
+                                        columns: dynamicTypeSize.isAccessibilitySize
+                                            ? [GridItem(.flexible(), alignment: .leading)]
+                                            : [GridItem(.adaptive(minimum: 140), alignment: .leading)],
+                                        alignment: .leading,
+                                        spacing: 8
+                                    ) {
+                                        ForEach(MapMarkerStyle.allCases) { style in
+                                            Label {
+                                                Text(style.title).foregroundStyle(OneTheme.secondaryInk)
+                                            } icon: {
+                                                Image(systemName: style.symbol).foregroundStyle(style.color)
+                                            }
+                                            .font(.caption)
+                                            .accessibilityHint(style.detail)
+                                        }
+                                    }
+                                        Text(mapDescription)
+                                            .font(.footnote)
+                                            .foregroundStyle(OneTheme.secondaryInk)
+                                        Text("Tap a marker for details. Faded markers were seen recently; unknown people stay anonymous.")
+                                            .font(.footnote)
+                                            .foregroundStyle(OneTheme.secondaryInk)
+                                        ForEach(store.scan.objects.filter { MapPresenceAppearance.presence($0) != nil }) { person in
+                                            Button {
+                                                selectedCamera = nil
+                                                selectedPresence = person
+                                            } label: {
+                                                Label((person.identityStatus == "matched" || person.identityStatus == "simulated") ? (person.identityName ?? "Person") : "Unknown person", systemImage: MapPresenceAppearance.presence(person)?.style.symbol ?? "person.fill")
+                                                    .frame(minHeight: 44)
+                                            }
+                                            .accessibilityLabel("\(MapPresenceAppearance.presence(person)?.style.title ?? "Person"), \((person.identityStatus == "matched" || person.identityStatus == "simulated") ? (person.identityName ?? "Person") : "Anonymous person")")
+                                        }
+                                        ForEach(Array(store.scene.cameraRegistrations.enumerated()), id: \.offset) { _, camera in
+                                            Button {
+                                                selectedPresence = nil
+                                                selectedCamera = camera
+                                            } label: {
+                                                Label(camera.cameraName ?? "Camera", systemImage: "camera.fill")
+                                                    .frame(minHeight: 44)
+                                            }
+                                        }
+                                        if store.scene.source == .roomplanLidar3D {
+                                            let registrations = store.scene.cameraRegistrations.isEmpty
+                                                ? (store.scene.cameraRegistration.map { [$0] } ?? [])
+                                                : store.scene.cameraRegistrations
+                                            if registrations.isEmpty {
+                                                CameraRegistrationStatusCard(registration: nil)
+                                            } else {
+                                                ForEach(Array(registrations.enumerated()), id: \.offset) { _, registration in
+                                                    CameraRegistrationStatusCard(registration: registration)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.top, 10)
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .tint(OneTheme.accentBlue)
+                                .padding(16)
+                                .accessibilityIdentifier("map-details")
+                            }
+                        }
+
+                        Text("Recent observations")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(OneTheme.ink)
+                        if store.events.isEmpty {
+                            SurfaceCard(radius: 20) {
+                                Label("No observations yet", systemImage: "tray").font(.subheadline).foregroundStyle(OneTheme.secondaryInk).padding(16)
+                            }
+                        } else {
+                            SurfaceCard(radius: 20) {
+                                VStack(spacing: 0) {
+                                    ForEach(store.events.prefix(3)) { event in
+                                        NavigationLink {
+                                            EventDetailView(event: event, apiClient: store.apiClient, homeID: store.session?.homeID)
+                                        } label: {
+                                            EventRow(event: event)
+                                        }
+                                        .buttonStyle(.plain)
+                                        if event.id != store.events.prefix(3).last?.id { Divider() }
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                            }
+                            .accessibilityIdentifier("map-recent-observations")
                         }
                     }
                 }
-                .padding(20)
+                .padding(.horizontal, 16)
+                .padding(.top, isCompact ? 4 : 8)
+                .padding(.bottom, isCompact ? 0 : 20)
             }
+            // Keep evidence hit targets clear of the floating tab bar.
+            .safeAreaPadding(.bottom, 80)
             .background(.regularMaterial)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }
         .sheet(isPresented: $showScanSetup) {
             NavigationStack { ScanView(store: store) }
@@ -186,19 +309,65 @@ struct MapEvidenceSheet: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+
+
     }
 
-    private func presenceLegendItem(title: String, detail: String, opacity: Double) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(Color.orange.opacity(opacity))
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.caption.weight(.semibold))
-                Text(detail).font(.caption2).foregroundStyle(OneTheme.secondaryInk)
+    private var mapTitle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Home map")
+                .font(.system(isCompact ? .headline : .title2, design: .rounded).weight(.bold))
+            if !store.cameraRooms.isEmpty {
+                Text("\(store.cameraRooms.count) rooms")
+                    .font(.subheadline)
+                    .foregroundStyle(OneTheme.secondaryInk)
             }
         }
     }
+
+    private var mapActions: some View {
+        Menu {
+            Button("Manage rooms", systemImage: "square.grid.2x2") { showRooms = true }
+            Button("Update room scan", systemImage: "viewfinder") { showScanSetup = true }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(OneTheme.ink)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Map options")
+    }
+
+    private func roomObservationSummary(roomID: UUID) -> String {
+        guard let observation = store.scan.objects.filter({ object in
+            object.zoneID == roomID && object.mapID == store.scene.mapID
+                && ["person", "people", "human"].contains(object.category.lowercased())
+                && object.observedAt != nil
+        }).max(by: { ($0.observedAt ?? .distantPast) < ($1.observedAt ?? .distantPast) }),
+              let observedAt = observation.observedAt else { return "No current observation · coverage unknown" }
+        let time = observedAt.formatted(date: .abbreviated, time: .shortened)
+        if observation.identityStatus == "simulated" {
+            let appearance = MapPresenceAppearance.presence(observation)
+            let name = observation.identityName ?? "Unknown person"
+            if appearance?.style == .simulatedStale { return "Earlier observation: \(name) · \(time). Current location unknown." }
+            if appearance?.isRecent == true { return "Recent observation: \(name) · \(time)" }
+            return "\(name) · \(time). Current location unknown."
+        }
+        guard let appearance = MapPresenceAppearance.presence(observation) else { return "Last observation \(time) · current presence unknown" }
+        let name = observation.identityStatus == "matched" ? (observation.identityName ?? "Person") : "Unknown person"
+        return "\(appearance.isRecent ? "Recent" : "Current") observation: \(name) · \(time)"
+    }
+
+    private var mapDescription: String {
+        switch store.scene.source {
+        case .roomplanLidar3D: "LiDAR room scan · metric 3D"
+        case .arkitVideo3D: "Video room scan · approximate 3D"
+        case .imported3D: "Imported 3D · \(store.scene.provenance) · manual placement"
+        default: "Approximate locations"
+        }
+    }
+
 }
 
 private struct RoomManagementSheet: View {
@@ -225,7 +394,7 @@ private struct RoomManagementSheet: View {
                         .disabled(newRoomName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isRoomMutating)
                     }
                 } footer: {
-                    Text("Rooms organize cameras. Native 3D geometry is captured separately by the iPhone/iPad scan.")
+                    Text("Assign cameras to rooms here; capture the map with a room scan.")
                 }
 
                 Section("Rooms") {
@@ -311,11 +480,11 @@ private struct CameraRegistrationStatusCard: View {
     private var copy: (title: String, detail: String) {
         switch registration?.status ?? .unavailable {
         case .positioned:
-            return ("Camera positioned", "Placed in the RoomPlan coordinate frame.")
+            return ("Positioned", "Saved on this room map.")
         case .needsRescan:
-            return ("Camera placement needs another attempt", "Keep the fixed camera still and retry Position this camera in 3D from that camera's own live view.")
+            return ("Retry placement", "Keep the camera still and retry positioning from its live view.")
         case .unavailable:
-            return ("Camera placement pending", "The LiDAR map is ready. Position the fixed Mac or browser camera later from its own live view; the room does not need another LiDAR scan.")
+            return ("Placement pending", "Position this camera from its live view. No new room scan is needed.")
         }
     }
 
@@ -377,7 +546,7 @@ private struct CameraReferenceImageCard: View {
                                 .foregroundStyle(OneTheme.secondaryInk)
                         }
                 }
-                Text("This is the latest fixed-camera visual memory for \(registration.cameraName ?? "this camera"). Refresh it only after the camera is physically in the position shown on the map.")
+                Text("Refresh only when \(registration.cameraName ?? "the camera") is in the position shown on the map.")
                     .font(.caption)
                     .foregroundStyle(OneTheme.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
@@ -429,7 +598,7 @@ struct ScanView: View {
     @State private var deletingRoomIndex: Int?
     @State private var showExitConfirmation = false
     @State private var roomNameDraft = ""
-    @State private var pendingRoomSync: [String] = []
+    @State private var pendingRoomSync: [CameraRoom] = []
     @State private var isBuildingStructure = false
 
     private var stepNumber: Int { step.rawValue + 1 }
@@ -467,7 +636,12 @@ struct ScanView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     setupFooter
                         .frame(maxWidth: .infinity)
-                        .background(OneTheme.canvas.opacity(0.98).ignoresSafeArea(edges: .horizontal))
+                        .padding(.top, 10)
+                        .padding(.bottom, 8)
+                        .background(
+                            OneTheme.canvas
+                                .ignoresSafeArea(edges: [.horizontal, .bottom])
+                        )
                 }
             }
         }
@@ -545,12 +719,10 @@ struct ScanView: View {
         switch step {
         case .prepare:
             VStack(alignment: .leading, spacing: 20) {
-                setupTitle(
-                    eyebrow: "MAP THE ROOM",
-                    title: "Create a metric 3D home map.",
+                setupTitle(title: "Scan your home.",
                     body: usesLiDAR
-                        ? "Walk around the room with this iPhone. ONE uses RoomPlan, RGB frames, and LiDAR depth to build the most precise native map."
-                        : "Walk around the room with this iPhone. ONE uses ARKit camera motion and tracked floor and wall planes to build an approximate metric 3D model without LiDAR."
+                        ? "Move slowly around the room to capture a LiDAR map."
+                        : "Move slowly around the room to capture an approximate 3D map."
                 )
                 SurfaceCard(radius: 24) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -561,11 +733,11 @@ struct ScanView: View {
                     .padding(18)
                 }
                 if usesLiDAR {
-                    Label("LiDAR and RoomPlan are available on this device.", systemImage: "checkmark.circle.fill")
+                    Label("LiDAR available", systemImage: "checkmark.circle.fill")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(OneTheme.accentBlue)
                 } else if ARVideoRoomCaptureCapability.isSupported {
-                    Label("This iPhone will use the LiDAR-free ARKit video scan.", systemImage: "video.fill")
+                    Label("Video scan available", systemImage: "video.fill")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(OneTheme.accentBlue)
                 } else {
@@ -577,7 +749,7 @@ struct ScanView: View {
 
         case .camera:
             VStack(alignment: .leading, spacing: 20) {
-                setupTitle(eyebrow: "CAMERA PLACEMENT", title: usesLiDAR ? "Tell ONE what this iPhone is doing." : "Save the room map first.", body: usesLiDAR ? "For a Mac or browser camera, scan the map only. The fixed camera can be positioned later." : "The fixed room camera is not needed for this scan. Build the room from this iPhone now and set up cameras later.")
+                setupTitle(title: usesLiDAR ? "Choose the scan camera." : "Save the room map first.", body: usesLiDAR ? "For a Mac or browser camera, scan the map only. The fixed camera can be positioned later." : "Scan with this iPhone. Set up room cameras later.")
                 VStack(spacing: 12) {
                     cameraChoice(id: nil, title: "Map only", detail: usesLiDAR ? "Recommended when the fixed camera is a Mac, browser, or another device." : "Uses only this iPhone's guided ARKit room video; no live room camera is required.", symbol: "map.fill")
                     if usesLiDAR {
@@ -590,14 +762,12 @@ struct ScanView: View {
 
         case .scan:
             VStack(alignment: .leading, spacing: 20) {
-                setupTitle(
-                    eyebrow: roomPlanCaptures.isEmpty ? "READY TO SCAN" : "NEXT ROOM",
-                    title: roomPlanCaptures.isEmpty ? "Walk the room once, carefully." : "Continue into the next room.",
+                setupTitle(title: roomPlanCaptures.isEmpty ? "Ready to scan." : "Continue into the next room.",
                     body: usesLiDAR
                         ? (roomPlanCaptures.isEmpty
-                            ? "The RoomPlan camera view will open full screen. Move steadily and cover several viewpoints. When the room is complete, tap Done scanning."
-                            : "ONE is keeping the same AR world origin. Move through the connecting area, scan the next room from several viewpoints, then tap Done scanning.")
-                        : "The ARKit camera view will open full screen. Move steadily around the room, keeping the floor and walls visible. When coverage is stable, tap Done scanning."
+                            ? "Move steadily and capture several angles. Tap Done scanning when the room is covered."
+                            : "Walk into the connected room, scan from several angles, then tap Done scanning.")
+                        : "Keep the floor and walls visible as you move. Tap Done scanning when coverage is stable."
                 )
                 SurfaceCard(radius: 24) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -654,19 +824,9 @@ struct ScanView: View {
 
         case .rooms:
             VStack(alignment: .leading, spacing: 20) {
-                setupTitle(
-                    eyebrow: "ROOM CAPTURED",
-                    title: roomPlanCaptures.count == 1 ? "One room is ready." : "\(roomPlanCaptures.count) rooms share one home frame.",
-                    body: "Add another connected room while tracking is still active, or finish now and ONE will merge the captured rooms into one whole-home RoomPlan structure."
+                setupTitle(title: roomPlanCaptures.count == 1 ? "One room is ready." : "\(roomPlanCaptures.count) rooms ready.",
+                    body: "Scan another connected room or finish your home map."
                 )
-                SurfaceCard(radius: 24) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        setupRequirement("Shared AR world origin is still active", symbol: "scope")
-                        setupRequirement("Each room keeps its own RoomPlan identity inside the merged structure", symbol: "square.3.layers.3d")
-                        setupRequirement("Fixed cameras will be positioned independently in this same home frame", symbol: "video.fill")
-                    }
-                    .padding(18)
-                }
                 VStack(spacing: 10) {
                     ForEach(roomNames.indices, id: \.self) { index in
                         SurfaceCard(radius: 18) {
@@ -675,7 +835,7 @@ struct ScanView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(roomNames[index])
                                             .font(.headline)
-                                        Text("Room \(index + 1) captured · \(roomPlanCaptures[index].visualSamples.count) visual views")
+                                        Text("Captured")
                                             .font(.caption)
                                             .foregroundStyle(OneTheme.secondaryInk)
                                     }
@@ -686,7 +846,7 @@ struct ScanView: View {
                                     }
                                     .font(.caption.weight(.semibold))
                                 }
-                                HStack(spacing: 8) {
+                                DisclosureGroup("Details") {
                                     Image(systemName: "scope")
                                         .foregroundStyle(OneTheme.accentBlue)
                                     if let area = roomPlanCaptures[index].visualDiagnostics.estimatedAreaSquareMeters {
@@ -734,7 +894,7 @@ struct ScanView: View {
                 }
                 .buttonStyle(OneSecondaryButtonStyle())
                 .disabled(isBuildingStructure || store.isRoomPlanUploading)
-                Text("You can remove any captured room before finishing. The other rooms stay saved on this iPhone and do not need to be scanned again.")
+                Text("Remove any room before finishing. Saving replaces the earlier saved rooms.")
                     .font(.caption)
                     .foregroundStyle(OneTheme.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
@@ -743,7 +903,7 @@ struct ScanView: View {
 
         case .complete:
             VStack(alignment: .leading, spacing: 20) {
-                setupTitle(eyebrow: "MAP SAVED", title: usesLiDAR ? "Home scan is complete." : "Room setup is complete.", body: usesLiDAR ? (selectedCameraID == nil ? "The metric RoomPlan home map is saved. Camera positioning can be completed later." : "The metric RoomPlan home map is saved and ONE has attempted to register this iPhone directly.") : "The approximate metric ARKit room model is saved. It was created without LiDAR and without using a fixed live camera.")
+                setupTitle(title: "Scan complete.", body: usesLiDAR ? (selectedCameraID == nil ? "Your home map is saved. Position cameras later." : "Your home map is saved. Check this iPhone’s placement below.") : "Your approximate 3D map is saved.")
                 SurfaceCard(radius: 24) {
                     Label(usesLiDAR ? "3D RoomPlan map saved" : "3D ARKit video map saved", systemImage: "checkmark.seal.fill")
                         .font(.headline)
@@ -775,12 +935,8 @@ struct ScanView: View {
         }
     }
 
-    private func setupTitle(eyebrow: String, title: String, body: String) -> some View {
+    private func setupTitle(title: String, body: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(eyebrow)
-                .font(.caption.weight(.bold))
-                .tracking(1.2)
-                .foregroundStyle(OneTheme.cyan)
             Text(title)
                 .font(.system(size: 30, weight: .semibold))
                 .tracking(-0.9)
@@ -841,7 +997,7 @@ struct ScanView: View {
                 .font(.footnote)
                 .foregroundStyle(.red)
         }
-        if let authError = store.authError {
+        if let authError = store.authError, !isMedicationReminderError(authError) {
             Label(authError, systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote)
                 .foregroundStyle(.red)
@@ -860,6 +1016,10 @@ struct ScanView: View {
             }
             .buttonStyle(.bordered)
         }
+    }
+
+    private func isMedicationReminderError(_ message: String) -> Bool {
+        message.localizedCaseInsensitiveContains("medication reminder")
     }
 
     private var setupFooter: some View {
@@ -1010,9 +1170,18 @@ struct ScanView: View {
             defer { isBuildingStructure = false }
             do {
                 let structure = try await StructureBuilder(options: []).capturedStructure(from: captures.map(\.room))
-                let saved = await store.uploadRoomPlanStructure(structure, captures: captures, cameraID: cameraID)
+                let saved = await store.uploadRoomPlanStructure(structure, captures: captures, roomNames: roomNames, cameraID: cameraID)
                 if saved {
-                    pendingRoomSync = roomNames
+                    // The backend replaces the previous logical room set when
+                    // a new native scan is saved. Refresh before creating the
+                    // names for this scan so the local store matches it.
+                    await store.refreshCameraConfiguration()
+                    pendingRoomSync = captures.indices.map { index in
+                        CameraRoom(
+                            id: captures[index].room.identifier,
+                            name: roomNames.indices.contains(index) ? roomNames[index] : "Room \(index + 1)"
+                        )
+                    }
                     await syncPendingRooms()
                     roomPlanARSession.pause()
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { step = .complete }
@@ -1025,8 +1194,8 @@ struct ScanView: View {
 
     @MainActor
     private func syncPendingRooms() async {
-        while let name = pendingRoomSync.first {
-            guard await store.createRoom(name: name) else { return }
+        while let room = pendingRoomSync.first {
+            guard await store.createRoom(id: room.id, name: room.name) else { return }
             pendingRoomSync.removeFirst()
         }
     }

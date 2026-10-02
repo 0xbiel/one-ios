@@ -8,22 +8,20 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    CareSpaceContextButton(space: store.activeCareSpace, isLoading: store.isCareSpacesLoading) {
+                    CareSpaceContextButton(space: store.activeCareSpace, selectedPersonName: nil, isLoading: store.isCareSpacesLoading) {
                         showCareSpaces = true
                     }
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                 } header: {
                     Text("Care space")
-                } footer: {
-                    Text("Switch homes or residences without mixing their people, cameras, maps, or consent choices.")
                 }
 
                 Section("Privacy and consent") {
                     if store.isConsentsLoading {
                         HStack(spacing: 10) {
                             ProgressView()
-                            Text("Loading your privacy choices…")
+                            Text("Loading choices…")
                                 .font(.subheadline)
                                 .foregroundStyle(OneTheme.secondaryInk)
                         }
@@ -46,21 +44,41 @@ struct SettingsView: View {
                             .font(.footnote)
                             .foregroundStyle(OneTheme.amber)
                     }
-                    Text("Sensitive room, audio, and clip data stays local unless you explicitly enable sharing. Medication reminders belong to each cared-for person and can be enabled from that person’s profile.")
+                    Text("Room, audio, and clip data stays local unless you enable sharing. Manage medication reminders in each person’s profile.")
                         .font(.footnote)
                 }
 
+                if store.canManageCareRecipients && !store.careRecipients.isEmpty {
+                    Section("Check-ins and analytics") {
+                        ForEach(store.careRecipients) { recipient in
+                            Toggle(isOn: Binding(
+                                get: { store.analyticsConsent(for: recipient) },
+                                set: { value in
+                                    Task { _ = await store.setAnalyticsConsent(for: recipient, enabled: value) }
+                                }
+                            )) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(recipient.displayName)
+                                    Text("Check-ins and household analytics")
+                                        .font(.footnote)
+                                        .foregroundStyle(OneTheme.secondaryInk)
+                                }
+                            }
+                            .tint(OneTheme.accentBlue)
+                            .disabled(store.isConsentMutating || store.isConsentsLoading)
+                        }
+                        Text("Consent is required separately for each person.")
+                            .font(.footnote)
+                    }
+                }
+
                 Section("Your data") {
-                    Button {
-                        store.lastDataRequest = DataRequest(kind: .export)
-                    } label: {
-                        Label("Prepare a data export", systemImage: "square.and.arrow.up")
-                    }
-                    Button(role: .destructive) {
-                        store.lastDataRequest = DataRequest(kind: .delete)
-                    } label: {
-                        Label("Request deletion", systemImage: "trash")
-                    }
+                    HouseholdPrivacyActions(
+                        homeID: store.session?.homeID,
+                        canManage: store.canManageHouseholdData,
+                        export: { try await store.exportHouseholdData() },
+                        delete: { try await store.deleteHouseholdData(confirmationHomeID: $0) }
+                    )
                 }
 
                 Section("Session") {
@@ -69,8 +87,6 @@ struct SettingsView: View {
                     } label: {
                         Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
                     }
-                    Text("Signing out revokes the backend session and clears this device’s stored credential.")
-                        .font(.footnote)
                 }
 
                 Section("About") {
@@ -85,6 +101,7 @@ struct SettingsView: View {
             .navigationTitle("Account")
             .task {
                 if store.careSpaces.isEmpty { await store.refreshCareSpaces() }
+                if store.careRecipients.isEmpty { await store.refreshCareRecipients() }
                 await store.refreshConsents()
             }
         }

@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0FC151CF8E3544FBAB8A2682 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DA18298EEC8C43AC9D6220BA /* Assets.xcassets */; };
 		13E893E336E0BAD95E145068 /* RoomPlanPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */; };
 		14589C3B92BF0F25E33B5D5B /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC0A5231CEB851F1933D6E8 /* HomeView.swift */; };
 		14E12DA5BDC4760F05D58E4D /* OneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B8EAD036BB929430BC85C2 /* OneTests.swift */; };
@@ -16,20 +15,23 @@
 		3BE3DC0F3373EAC34720DEA0 /* AuthenticationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31C112120C88D0FC93614274 /* AuthenticationView.swift */; };
 		3CF500DE2A952273C9EDEBE8 /* EventsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E88B76B5D76360C9A12F4633 /* EventsView.swift */; };
 		493E10A261140B1BC2CC361B /* FamilyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23676A04AB3156518DB63059 /* FamilyView.swift */; };
+		4A5D5DCFFBB02E9D2C2410B4 /* OneCameraBLEProvisioner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B5620A871B053C873841751 /* OneCameraBLEProvisioner.swift */; };
 		4F93247732C2307418BF5129 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EDBB883AFAF5A7F0A85739 /* Components.swift */; };
 		594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 515046F62BFD6A039EDDBA3E /* OneTheme.swift */; };
-		5C908252132EEB61769D2975 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */; };
 		6AA42C3DB98D0BE3DD90E4EB /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58DD033E4F49D68C4D705B75 /* RootView.swift */; };
 		6B87F57BC95FD12C75A8E1B5 /* RoomPlanUSDZView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A92FBAC0357CF0BE5D82DED /* RoomPlanUSDZView.swift */; };
 		7398769CF793D626F08D4E6E /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09509CA5012A8E0B3BD17AA4 /* Models.swift */; };
-		7A4C4E4F06194B16BFE9C101 /* CareSpaceSwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B4C4E4F06194B16BFE9C102 /* CareSpaceSwitcherView.swift */; };
+		85408ED1BE1B51C6529FB1A1 /* CareSpaceSwitcherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8E8A801CB96C279BCB26B98 /* CareSpaceSwitcherView.swift */; };
 		8D05E58E224E873F738534A9 /* BackendContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 102E67084C9F650302C0E8E7 /* BackendContracts.swift */; };
-		950F17A230601B2200E6ACCE /* one.icon in Resources */ = {isa = PBXBuildFile; fileRef = 950F17A130601B2200E6ACCE /* one.icon */; };
+		8F7C06142685EDD6D012ED97 /* DataReviewJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = F039728BE7A35B575B665A68 /* DataReviewJSON.swift */; };
 		9BF68963ED6A0F9F06E97D73 /* AssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1A3257A3830A3C495984167 /* AssistantView.swift */; };
 		A655ABFB79D7A532A54C8EE7 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EDC8CE1140D60643A7524E /* OnboardingView.swift */; };
 		BC427E75A868B2308FA2D89B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E28BA46E8901F5D89D50092 /* SettingsView.swift */; };
+		C1CED0FE1684F0BBD092C40A /* DataReviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C784F2AE3D3B9B0BBE3D8026 /* DataReviewModels.swift */; };
 		CAD81F43B62B7EAFF1BF414A /* MapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA911D865B440547A2701529 /* MapView.swift */; };
 		D578CF1E50B4233904A442F8 /* OneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B520B423F23BD2037C9C90E9 /* OneApp.swift */; };
+		DB7DF50FF3B3D6492FB2D0D3 /* HouseholdPrivacyActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC93497D8E35D8DDC532E602 /* HouseholdPrivacyActions.swift */; };
+		F183F6423DBF7B38D351D23D /* DataReviewCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D8C8CF65FBAF3330E437EDC /* DataReviewCards.swift */; };
 		FAC75D544B6871D4A568DAEE /* Services.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BE6BA9D01FF21154D6C041A /* Services.swift */; };
 /* End PBXBuildFile section */
 
@@ -53,24 +55,25 @@
 		31C112120C88D0FC93614274 /* AuthenticationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticationView.swift; sourceTree = "<group>"; };
 		48EDC8CE1140D60643A7524E /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		4CC0A5231CEB851F1933D6E8 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		4D8C8CF65FBAF3330E437EDC /* DataReviewCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataReviewCards.swift; sourceTree = "<group>"; };
 		50091C923FDB2EC458E7C045 /* One.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = One.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		515046F62BFD6A039EDDBA3E /* OneTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneTheme.swift; sourceTree = "<group>"; };
 		58DD033E4F49D68C4D705B75 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		5A92FBAC0357CF0BE5D82DED /* RoomPlanUSDZView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanUSDZView.swift; sourceTree = "<group>"; };
 		6BE6BA9D01FF21154D6C041A /* Services.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services.swift; sourceTree = "<group>"; };
 		6D019DBF69CF28A1719FBA71 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
-		752F610BAFB0F25DFCEAD4F4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		7B4C4E4F06194B16BFE9C102 /* CareSpaceSwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CareSpaceSwitcherView.swift; sourceTree = "<group>"; };
-		950F17A130601B2200E6ACCE /* one.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = one.icon; sourceTree = "<group>"; };
+		9B5620A871B053C873841751 /* OneCameraBLEProvisioner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneCameraBLEProvisioner.swift; sourceTree = "<group>"; };
 		AA911D865B440547A2701529 /* MapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapView.swift; sourceTree = "<group>"; };
 		B520B423F23BD2037C9C90E9 /* OneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OneApp.swift; sourceTree = "<group>"; };
+		C784F2AE3D3B9B0BBE3D8026 /* DataReviewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataReviewModels.swift; sourceTree = "<group>"; };
+		CC93497D8E35D8DDC532E602 /* HouseholdPrivacyActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HouseholdPrivacyActions.swift; sourceTree = "<group>"; };
 		CE6F527D1F75726A80B6E01E /* RoomPlanPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanPayload.swift; sourceTree = "<group>"; };
-		D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		D18F62C1B731CDD9736AE49B /* RoomPlanCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomPlanCaptureView.swift; sourceTree = "<group>"; };
 		D1A3257A3830A3C495984167 /* AssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantView.swift; sourceTree = "<group>"; };
-		DA18298EEC8C43AC9D6220BA /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		D8E8A801CB96C279BCB26B98 /* CareSpaceSwitcherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CareSpaceSwitcherView.swift; sourceTree = "<group>"; };
 		E7EDBB883AFAF5A7F0A85739 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
 		E88B76B5D76360C9A12F4633 /* EventsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventsView.swift; sourceTree = "<group>"; };
+		F039728BE7A35B575B665A68 /* DataReviewJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataReviewJSON.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -80,6 +83,14 @@
 				23676A04AB3156518DB63059 /* FamilyView.swift */,
 			);
 			path = Family;
+			sourceTree = "<group>";
+		};
+		11E446181F89C5B430CAD089 /* Device */ = {
+			isa = PBXGroup;
+			children = (
+				9B5620A871B053C873841751 /* OneCameraBLEProvisioner.swift */,
+			);
+			path = Device;
 			sourceTree = "<group>";
 		};
 		191298EFAAA2865264536FFA /* Events */ = {
@@ -94,6 +105,7 @@
 			isa = PBXGroup;
 			children = (
 				3258FB4BA3A03E6E5B41113A /* DesignSystem */,
+				11E446181F89C5B430CAD089 /* Device */,
 				6190EA45773CEFB517B4FDC8 /* Networking */,
 				83FC05A1AAF9B9A1DE89E79F /* RoomPlan */,
 				ECD6062189E1E13F4ED0F437 /* Utilities */,
@@ -123,7 +135,8 @@
 			children = (
 				CF9A34AB694285CD5C4FAABC /* Assistant */,
 				C1037205DBC61DF05AECC493 /* Authentication */,
-				7C4C4E4F06194B16BFE9C103 /* CareSpaces */,
+				9DE986E6DDA6162B60D1EF92 /* CareSpaces */,
+				A3E47C6D0426FF444EEB4729 /* DataReview */,
 				191298EFAAA2865264536FFA /* Events */,
 				03F85C9BA5DE09E1753DF350 /* Family */,
 				DFB575999655C42FFE1DD4C0 /* Home */,
@@ -147,7 +160,6 @@
 			children = (
 				5CCB684DA81D289109879F41 /* One */,
 				2F58F2420F58898705ED17D3 /* OneTests */,
-				950F17A130601B2200E6ACCE /* one.icon */,
 				8EC650B74198568B9ECDA582 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -159,9 +171,6 @@
 				19D8EA82D8F8524E51CEC1FA /* Core */,
 				48D396D03446362F52AC6532 /* Features */,
 				56756CED8953D299CF20FC79 /* Models */,
-				DA18298EEC8C43AC9D6220BA /* Assets.xcassets */,
-				752F610BAFB0F25DFCEAD4F4 /* Info.plist */,
-				D1253DF8D9BCCEF7FC7272B0 /* PrivacyInfo.xcprivacy */,
 			);
 			path = One;
 			sourceTree = "<group>";
@@ -170,6 +179,7 @@
 			isa = PBXGroup;
 			children = (
 				102E67084C9F650302C0E8E7 /* BackendContracts.swift */,
+				F039728BE7A35B575B665A68 /* DataReviewJSON.swift */,
 			);
 			path = Networking;
 			sourceTree = "<group>";
@@ -180,14 +190,6 @@
 				1E28BA46E8901F5D89D50092 /* SettingsView.swift */,
 			);
 			path = Settings;
-			sourceTree = "<group>";
-		};
-		7C4C4E4F06194B16BFE9C103 /* CareSpaces */ = {
-			isa = PBXGroup;
-			children = (
-				7B4C4E4F06194B16BFE9C102 /* CareSpaceSwitcherView.swift */,
-			);
-			path = CareSpaces;
 			sourceTree = "<group>";
 		};
 		83FC05A1AAF9B9A1DE89E79F /* RoomPlan */ = {
@@ -205,6 +207,24 @@
 				167FDD686D21A14C8CF73D98 /* OneTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		9DE986E6DDA6162B60D1EF92 /* CareSpaces */ = {
+			isa = PBXGroup;
+			children = (
+				D8E8A801CB96C279BCB26B98 /* CareSpaceSwitcherView.swift */,
+			);
+			path = CareSpaces;
+			sourceTree = "<group>";
+		};
+		A3E47C6D0426FF444EEB4729 /* DataReview */ = {
+			isa = PBXGroup;
+			children = (
+				4D8C8CF65FBAF3330E437EDC /* DataReviewCards.swift */,
+				C784F2AE3D3B9B0BBE3D8026 /* DataReviewModels.swift */,
+				CC93497D8E35D8DDC532E602 /* HouseholdPrivacyActions.swift */,
+			);
+			path = DataReview;
 			sourceTree = "<group>";
 		};
 		BEFAED0D11B02C37F849806D /* Onboarding */ = {
@@ -293,7 +313,6 @@
 			buildConfigurationList = 3E4877C14E60FEE4264B878F /* Build configuration list for PBXNativeTarget "One" */;
 			buildPhases = (
 				903B6B0C11A5BD104EE62C37 /* Sources */,
-				17F6E41875C531DACAE142DC /* Resources */,
 			);
 			buildRules = (
 			);
@@ -314,6 +333,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					6B220B998134D969EC992E1C = {
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = DDA39AAA93E64FD727B5A6B9 /* Build configuration list for PBXProject "One" */;
 			developmentRegion = en;
@@ -335,37 +359,29 @@
 		};
 /* End PBXProject section */
 
-/* Begin PBXResourcesBuildPhase section */
-		17F6E41875C531DACAE142DC /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				0FC151CF8E3544FBAB8A2682 /* Assets.xcassets in Resources */,
-				5C908252132EEB61769D2975 /* PrivacyInfo.xcprivacy in Resources */,
-				950F17A230601B2200E6ACCE /* one.icon in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
-
 /* Begin PBXSourcesBuildPhase section */
 		903B6B0C11A5BD104EE62C37 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				7A4C4E4F06194B16BFE9C101 /* CareSpaceSwitcherView.swift in Sources */,
 				254147FE88EDD1993098F9A8 /* AppStore.swift in Sources */,
 				9BF68963ED6A0F9F06E97D73 /* AssistantView.swift in Sources */,
 				3BE3DC0F3373EAC34720DEA0 /* AuthenticationView.swift in Sources */,
 				8D05E58E224E873F738534A9 /* BackendContracts.swift in Sources */,
+				85408ED1BE1B51C6529FB1A1 /* CareSpaceSwitcherView.swift in Sources */,
 				4F93247732C2307418BF5129 /* Components.swift in Sources */,
+				F183F6423DBF7B38D351D23D /* DataReviewCards.swift in Sources */,
+				8F7C06142685EDD6D012ED97 /* DataReviewJSON.swift in Sources */,
+				C1CED0FE1684F0BBD092C40A /* DataReviewModels.swift in Sources */,
 				3CF500DE2A952273C9EDEBE8 /* EventsView.swift in Sources */,
 				493E10A261140B1BC2CC361B /* FamilyView.swift in Sources */,
 				14589C3B92BF0F25E33B5D5B /* HomeView.swift in Sources */,
+				DB7DF50FF3B3D6492FB2D0D3 /* HouseholdPrivacyActions.swift in Sources */,
 				CAD81F43B62B7EAFF1BF414A /* MapView.swift in Sources */,
 				7398769CF793D626F08D4E6E /* Models.swift in Sources */,
 				A655ABFB79D7A532A54C8EE7 /* OnboardingView.swift in Sources */,
 				D578CF1E50B4233904A442F8 /* OneApp.swift in Sources */,
+				4A5D5DCFFBB02E9D2C2410B4 /* OneCameraBLEProvisioner.swift in Sources */,
 				594F3A6A762AE5E876226071 /* OneTheme.swift in Sources */,
 				20888E946549B06C96BDBDAF /* RoomPlanCaptureView.swift in Sources */,
 				13E893E336E0BAD95E145068 /* RoomPlanPayload.swift in Sources */,
@@ -464,19 +480,17 @@
 		22FFF29E8F40405996EF1A19 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = one;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 92U2T283AG;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				ONE_API_BASE_URL = "https://biels-macbook-pro.taild34b3f.ts.net/api/v1";
-				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xbiel.one;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -503,19 +517,17 @@
 		BAAD5EAC654589DF04B68745 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = one;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 92U2T283AG;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = One/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.medical";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				ONE_API_BASE_URL = "https://biels-macbook-pro.taild34b3f.ts.net/api/v1";
-				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = com.0xbiel.one;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

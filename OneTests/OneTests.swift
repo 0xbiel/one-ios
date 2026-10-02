@@ -12,6 +12,34 @@ final class OneTests: XCTestCase {
         XCTAssertEqual(store.consents.count, 3)
     }
 
+    func testMapPresenceKeepsFreshnessBoundariesAndUnknownIdentityAnonymous() throws {
+        let now = Date(timeIntervalSince1970: 1_000)
+        func person(age: Double, state: PersonPresenceState? = nil, identity: String? = nil) -> RoomObject {
+            RoomObject(id: UUID(), name: "person", category: "person", position: .zero, dimensions: SIMD3(0.4, 1.7, 0.4), confidence: .high, zoneID: UUID(), observedAt: now.addingTimeInterval(-age), presenceState: state, identityStatus: identity, identityName: "An unconfirmed name")
+        }
+        XCTAssertEqual(MapPresenceAppearance.presence(person(age: 12), now: now)?.style, .unknownNow)
+        XCTAssertEqual(MapPresenceAppearance.presence(person(age: 12.01), now: now)?.style, .unknownRecent)
+        XCTAssertNotNil(MapPresenceAppearance.presence(person(age: 120), now: now))
+        XCTAssertNil(MapPresenceAppearance.presence(person(age: 120.01), now: now))
+        XCTAssertNil(MapPresenceAppearance.presence(person(age: 2, state: .stale), now: now))
+        XCTAssertEqual(MapPresenceAppearance.presence(person(age: 2, identity: "weak"), now: now)?.style, .unknownNow)
+        let recognized = try XCTUnwrap(MapPresenceAppearance.presence(person(age: 35, identity: "matched"), now: now))
+        XCTAssertEqual(recognized.style, .recognized)
+        XCTAssertTrue(recognized.isRecent)
+        XCTAssertLessThan(recognized.opacity, 0.5)
+    }
+
+    func testMapCameraOfflineTakesPriorityOverPresence() {
+        let cameraID = UUID()
+        let registration = CameraRegistrationDescriptor(status: .positioned, cameraID: cameraID, mapID: UUID(), coordinateFrame: "roomplan", cameraToWorld: nil, confidence: 1, trackingState: "normal", source: "test")
+        let knownPerson = RoomObject(id: UUID(), name: "person", category: "person", position: .zero, dimensions: SIMD3(0.4, 1.7, 0.4), confidence: .high, zoneID: UUID(), cameraID: cameraID, observedAt: Date(), presenceState: .current, identityStatus: "matched")
+        let offline = PairedCamera(id: cameraID, name: "Camera", roomID: nil, status: "offline")
+        let online = PairedCamera(id: cameraID, name: "Camera", roomID: nil, status: "online")
+        XCTAssertEqual(MapMarkerStyle.camera(registration, objects: [knownPerson], cameras: [offline]), .cameraOffline)
+        XCTAssertEqual(MapMarkerStyle.camera(registration, objects: [knownPerson], cameras: [online]), .recognized)
+        XCTAssertEqual(MapMarkerStyle.camera(registration, objects: [], cameras: [online]), .cameraOnline)
+    }
+
     func testConfidenceIsCodable() throws {
         let data = try JSONEncoder().encode(ObservationConfidence.medium)
         XCTAssertEqual(try JSONDecoder().decode(ObservationConfidence.self, from: data), .medium)
@@ -729,6 +757,24 @@ final class OneTests: XCTestCase {
         XCTAssertFalse(store.privacyConsents.contains(where: { $0.purpose == "Medication reminders" }))
     }
 
+    func testAnalyticsConsentIsScopedToCareRecipient() async throws {
+        let store = AppStore.demo
+        let person = try XCTUnwrap(store.careRecipients.first)
+        let otherPerson = try XCTUnwrap(store.careRecipients.dropFirst().first)
+
+        XCTAssertFalse(store.analyticsConsent(for: person))
+        XCTAssertFalse(store.analyticsConsent(for: otherPerson))
+
+        let enabled = await store.setAnalyticsConsent(for: person, enabled: true)
+        XCTAssertTrue(enabled)
+        XCTAssertTrue(store.analyticsConsent(for: person))
+        XCTAssertFalse(store.analyticsConsent(for: otherPerson))
+
+        let disabled = await store.setAnalyticsConsent(for: person, enabled: false)
+        XCTAssertTrue(disabled)
+        XCTAssertFalse(store.analyticsConsent(for: person))
+    }
+
     func testDemoFamilyMemberCanBeEditedAndRemovedLocally() async throws {
         let store = AppStore.demo
         let member = try XCTUnwrap(store.caregivers.first(where: { !$0.isCurrentUser && $0.role == .supporter }))
@@ -1179,4 +1225,129 @@ private func requestBody(_ request: URLRequest) -> Data? {
         data.append(buffer, count: count)
     }
     return data.isEmpty ? nil : data
+}
+
+extension OneTests {
+    func testManualPlacementResponseDecodesSnakeCaseIdentifiers() throws {
+        let id = UUID(), camera = UUID(), map = UUID()
+        let payload: [String: Any] = ["id": id.uuidString, "status": "positioned", "camera_id": camera.uuidString, "map_id": map.uuidString, "coordinate_frame": "import-local", "camera_to_world": [[1,0,0,2],[0,1,0,1],[0,0,1,3],[0,0,0,1]], "tracking_state": "manual", "source": "manual-geometry-registration"]
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let result = try decoder.decode(RoomPlanCameraRegistrationResponse.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(result.cameraID, camera)
+        XCTAssertEqual(result.mapID, map)
+        XCTAssertEqual(result.status, .positioned)
+    }
+}
+
+
+extension OneTests {
+    func testMapViewportPinchChangesDistanceWithoutMovingGeometryTarget() {
+        var viewport = HomeMapViewport()
+        viewport.fit(extents: SIMD3(12, 3, 9), aspect: 0.5)
+        let distance = viewport.distance
+        viewport.zoom(scale: 2)
+        XCTAssertEqual(viewport.distance, distance / 2, accuracy: 0.0001)
+        XCTAssertEqual(viewport.zoomPercent, 200)
+        XCTAssertEqual(viewport.target, .zero)
+        viewport.zoom(scale: 0.5)
+        XCTAssertEqual(viewport.distance, distance, accuracy: 0.0001)
+    }
+
+    func testMapViewportOrbitAndZoomRemainBounded() {
+        var viewport = HomeMapViewport()
+        viewport.fit(extents: SIMD3(12, 3, 9), aspect: 0.5)
+        viewport.zoom(scale: 1000)
+        XCTAssertEqual(viewport.distance, viewport.fitDistance * 0.35, accuracy: 0.0001)
+        viewport.orbit(dx: 100_000, dy: -100_000)
+        XCTAssertEqual(viewport.pitch, .pi / 9, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(abs(viewport.yaw), 2 * .pi)
+        viewport.zoom(scale: 0.0001)
+        XCTAssertEqual(viewport.distance, viewport.fitDistance * 3, accuracy: 0.0001)
+        viewport.orbit(dx: -100_000, dy: 100_000)
+        XCTAssertEqual(viewport.pitch, .pi * 4 / 9, accuracy: 0.0001)
+        XCTAssertTrue(viewport.eye.x.isFinite && viewport.eye.y.isFinite && viewport.eye.z.isFinite)
+    }
+
+    func testMapViewportResetRestoresHomeCenteredFitAfterCombinedGestures() {
+        var viewport = HomeMapViewport()
+        viewport.fit(extents: SIMD3(12, 3, 9), aspect: 0.5)
+        let eye = viewport.eye
+        viewport.orbit(dx: 100, dy: 40)
+        viewport.zoom(scale: 1.7)
+        viewport.reset()
+        XCTAssertEqual(viewport.zoomPercent, 100)
+        XCTAssertEqual(viewport.target, .zero)
+        XCTAssertEqual(viewport.eye, eye)
+    }
+
+    func testMapViewportIgnoresInvalidGestureSamples() {
+        var viewport = HomeMapViewport()
+        viewport.fit(extents: SIMD3(12, 3, 9), aspect: 0.5)
+        let eye = viewport.eye
+        viewport.zoom(scale: .nan)
+        viewport.zoom(scale: 0)
+        viewport.orbit(dx: .infinity, dy: 0)
+        XCTAssertEqual(viewport.eye, eye)
+    }
+}
+
+
+extension OneTests {
+    func testMapViewportResizePreservesZoomAndOrbit() {
+        var viewport = HomeMapViewport()
+        viewport.fit(extents: SIMD3(12, 3, 9), aspect: 0.5)
+        viewport.zoom(scale: 1.5)
+        viewport.orbit(dx: 80, dy: 30)
+        let yaw = viewport.yaw, pitch = viewport.pitch, percent = viewport.zoomPercent
+        viewport.fit(extents: SIMD3(12, 3, 9), aspect: 1.2, preservePose: true)
+        XCTAssertEqual(viewport.yaw, yaw)
+        XCTAssertEqual(viewport.pitch, pitch)
+        XCTAssertEqual(viewport.zoomPercent, percent)
+    }
+}
+
+extension OneTests {
+    func testDataReviewJSONRetainsScopedEvidenceKeysAndExactCounts() throws {
+        let data = Data(#"{"data":{"activity":{"total_observations":138},"observations":[{"source_id":"fixture-evidence","camera_id":"fixture-camera"}],"synthetic":true}}"#.utf8)
+        let value = try JSONDecoder().decode(DataReviewJSON.self, from: data)
+        XCTAssertEqual(value["data"]["activity"]["total_observations"].int, 138)
+        XCTAssertEqual(value["data"]["observations"].array[0]["source_id"].string, "fixture-evidence")
+        XCTAssertTrue(value["data"]["synthetic"].bool)
+        XCTAssertEqual(DataReviewJSON.number(.infinity).int, 0)
+    }
+
+    @MainActor func testPrivacyEligibilityRequiresMatchingAdministratorMembership() {
+        let store = AppStore.demo
+        let homeID = UUID()
+        store.session = AuthSession(accessToken: "disposable-test-token", homeID: homeID, userID: UUID(), role: .caregiver, expiresAt: nil)
+        store.careSpaces = [.init(id: homeID, name: "Disposable home", residentName: "Fictional Bobby", careSetting: .home, supportFocus: .general, role: .caregiver, active: true)]
+        XCTAssertFalse(store.canManageHouseholdData)
+        store.careSpaces = [.init(id: UUID(), name: "Different home", residentName: "Fictional person", careSetting: .home, supportFocus: .general, role: .admin, active: true)]
+        XCTAssertFalse(store.canManageHouseholdData)
+        store.careSpaces = [.init(id: homeID, name: "Disposable home", residentName: "Fictional Bobby", careSetting: .home, supportFocus: .general, role: .admin, active: true)]
+        XCTAssertTrue(store.canManageHouseholdData)
+    }
+
+    @MainActor func testMismatchingDeletionConfirmationPreservesLocalSession() async {
+        let store = AppStore.demo
+        let homeID = UUID()
+        store.session = AuthSession(accessToken: "disposable-test-token", homeID: homeID, userID: UUID(), role: .caregiver, expiresAt: nil)
+        store.careSpaces = [.init(id: homeID, name: "Disposable home", residentName: "Fictional Bobby", careSetting: .home, supportFocus: .general, role: .admin, active: true)]
+        do {
+            try await store.deleteHouseholdData(confirmationHomeID: UUID().uuidString)
+            XCTFail("Mismatching confirmation must never reach deletion")
+        } catch { XCTAssertEqual(store.session?.homeID, homeID) }
+    }
+
+    @MainActor func testLogoutClearsScopedDataReviewWithoutPersistingCredentials() async {
+        let store = AppStore(events: [], scan: .empty, consents: [], sessionStore: InMemorySessionStore(), runtimeConfiguration: RuntimeConfiguration(info: ["ONE_API_BASE_URL": "http://127.0.0.1:8000/api/v1"]))
+        store.activityReview = .init(recipientName: "Bobby", windowLabel: "Fixture", days: [], totalObservations: 0, trend: "unknown", coverageLabel: "Unknown", limitations: [], sources: [], synthetic: true)
+        store.dataReviewError = "Old household error"
+        // Force the normal-app clear path with an in-memory session store and mock API.
+        store.session = AuthSession(accessToken: "disposable-test-token", homeID: UUID(), userID: UUID(), role: .caregiver, expiresAt: nil)
+        await store.logout()
+        XCTAssertNil(store.activityReview)
+        XCTAssertNil(store.assistantContextReview)
+        XCTAssertNil(store.dataReviewError)
+    }
 }

@@ -132,3 +132,146 @@ struct ConfidenceBadge: View {
             .accessibilityLabel("Confidence: \(confidence.title)")
     }
 }
+
+/// Shared by the map legend, projected markers, and selection details.
+enum MapMarkerStyle: String, CaseIterable, Identifiable {
+    case simulated, simulatedUnknown, simulatedRecent, simulatedStale, recognized, unknownNow, unknownRecent, cameraOnline, cameraOffline, cameraUnknown, cameraSimulated
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .simulated: "Person"
+        case .simulatedUnknown: "Unknown person"
+        case .simulatedRecent: "Recent observation"
+        case .simulatedStale: "Earlier observation"
+        case .recognized: "Recognized"
+        case .unknownNow: "Unknown now"
+        case .unknownRecent: "Unknown recent"
+        case .cameraOnline: "Camera online"
+        case .cameraOffline: "Camera offline"
+        case .cameraUnknown: "Camera status unknown"
+        case .cameraSimulated: "Camera active"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .simulated: "person.fill"
+        case .simulatedUnknown: "person.fill.questionmark"
+        case .simulatedRecent, .simulatedStale: "clock.fill"
+        case .recognized: "person.crop.circle.badge.checkmark"
+        case .unknownNow: "person.fill.questionmark"
+        case .unknownRecent: "clock.fill"
+        case .cameraOnline, .cameraSimulated: "camera.fill"
+        case .cameraUnknown: "camera.badge.ellipsis"
+        case .cameraOffline: "video.slash.fill"
+        }
+    }
+
+    var uiColor: UIColor {
+        switch self {
+        case .simulated, .simulatedUnknown: .systemPurple
+        case .simulatedRecent, .simulatedStale: .systemGray
+        case .recognized: .systemGreen
+        case .unknownNow, .unknownRecent: .systemOrange
+        case .cameraOnline: .systemBlue
+        case .cameraOffline: .systemRed
+        case .cameraUnknown: .systemGray
+        case .cameraSimulated: .systemPurple
+        }
+    }
+
+    var color: Color { Color(uiColor: uiColor) }
+
+    var detail: String {
+        switch self {
+        case .simulated: "Named scripted position; no camera capture or recognition."
+        case .simulatedUnknown: "Anonymous scripted position; no camera capture or recognition."
+        case .simulatedRecent: "Recent scripted position, not a current sighting."
+        case .simulatedStale: "Earlier scripted position; current location is unknown."
+        case .recognized: "Face profile matched. Faded markers were seen recently."
+        case .unknownNow: "Seen within about 12 seconds."
+        case .unknownRecent: "Last seen within about 2 minutes."
+        case .cameraOnline: "Device connected; floor coverage is not established."
+        case .cameraUnknown: "Camera status or placement is unconfirmed."
+        case .cameraSimulated: "Scripted availability; no real camera capture."
+        case .cameraOffline: "Camera unavailable."
+        }
+    }
+
+    static func camera(_ registration: CameraRegistrationDescriptor, objects: [RoomObject], cameras: [PairedCamera]) -> Self {
+        guard registration.status == .positioned,
+              let id = registration.cameraID,
+              let camera = cameras.first(where: { $0.id == id }) else { return .cameraUnknown }
+        if camera.simulationStatus == "simulated_online" { return .cameraSimulated }
+        if camera.simulationStatus == "simulated_offline" || camera.status.lowercased() == "offline" { return .cameraOffline }
+        guard camera.status.lowercased() == "online" else { return .cameraUnknown }
+        let people = objects.filter {
+            $0.cameraID == registration.cameraID && $0.identityStatus != "simulated" && MapPresenceAppearance.presence($0) != nil
+        }
+        if people.contains(where: { $0.identityStatus == "matched" }) { return .recognized }
+        if people.contains(where: { MapPresenceAppearance.presence($0)?.isRecent == false }) { return .unknownNow }
+        if !people.isEmpty { return .unknownRecent }
+        return .cameraOnline
+    }
+}
+
+struct MapPresenceAppearance {
+    let style: MapMarkerStyle
+    let isRecent: Bool
+
+    var opacity: Double { isRecent ? 0.38 : 0.96 }
+
+    static func presence(_ object: RoomObject, now: Date = Date()) -> Self? {
+        guard ["person", "people", "human"].contains(object.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                || ["person", "people", "human"].contains(object.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+              let observedAt = object.observedAt else { return nil }
+        let age = now.timeIntervalSince(observedAt)
+        guard age >= -5 else { return nil }
+        if object.identityStatus == "simulated" {
+            if object.presenceState == .stale || age > 120 { return Self(style: .simulatedStale, isRecent: true) }
+            if object.presenceState == .recent || age > 12 { return Self(style: .simulatedRecent, isRecent: true) }
+            let named = !(object.identityName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            return Self(style: named ? .simulated : .simulatedUnknown, isRecent: false)
+        }
+        guard object.presenceState != .stale, age <= 120 else { return nil }
+        let current = object.presenceState != .recent && age <= 12
+        return Self(style: object.identityStatus == "matched" ? .recognized : (current ? .unknownNow : .unknownRecent), isRecent: !current)
+    }
+}
+
+struct OneStatusBadge: View {
+    let title: String
+    let symbol: String
+    var tint: Color = OneTheme.accentBlue
+    var faded = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+                .opacity(faded ? 0.38 : 1)
+                .accessibilityHidden(true)
+            Text(title)
+                .foregroundStyle(OneTheme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(tint.opacity(faded ? 0.05 : 0.10), in: Capsule())
+        .overlay { Capsule().stroke(tint.opacity(faded ? 0.14 : 0.22), lineWidth: 0.75) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+    }
+}
+
+struct MapLegendBadge: View {
+    let style: MapMarkerStyle
+
+    var body: some View {
+        OneStatusBadge(title: style.title, symbol: style.symbol, tint: style.color, faded: style == .unknownRecent)
+            .accessibilityHint(style.detail)
+    }
+}

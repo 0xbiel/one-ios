@@ -33,11 +33,36 @@ final class AppStore {
         AssistantMessage(isUser: false, text: "Hi, I’m here for a calm daily check-in. Press and hold when you’d like to talk.")
     ]
     var familyAssistantMessages: [AssistantMessage] = [
-        AssistantMessage(isUser: false, text: "I can summarize medication records, daily check-ins, and bounded safety signals for the person you select. I do not diagnose or make care decisions.")
+        AssistantMessage(isUser: false, text: "Ask about today’s plan, check-ins, or observations. I do not diagnose or make care decisions.")
     ]
+    var assistantCapability: AssistantCapability?
+    var isAssistantCapabilityLoading = false
+    var normalAssistantMessages: [AssistantVisibleMessage] = []
+    var assistantStreamingText = ""
+    var assistantPendingQuestions: AssistantQuestionBatch?
+    var assistantQuestionAnswers: [String: AssistantQuestionAnswer] = [:]
+    var assistantChatError: String?
+    var isAssistantStreaming = false
+    var isAssistantCancelling = false
+    private var assistantConversationID: UUID?
+    private var assistantRevision = 0
+    private var assistantChatScope: AssistantChatScope?
+    private var assistantActiveStreamID = UUID()
+    private var assistantCapabilityLoadID = UUID()
+    private var assistantRetryOperation: AssistantChatOperation?
+    private var assistantTurnSnapshot: [AssistantVisibleMessage] = []
+    private var assistantErrorRetryable = false
+    private var assistantServerFailed = false
+    @ObservationIgnored private var assistantStreamTask: Task<Void, Never>?
     var isListening = false
     var consents: [ConsentRecord]
     var lastDataRequest: DataRequest?
+    var dayStoryReview: DayStoryReviewModel?
+    var activityReview: ActivityReviewModel?
+    var collectionReview: CollectionReviewModel?
+    var assistantContextReview: AssistantContextReviewModel?
+    var dataReviewError: String?
+    var isAssistantContextReviewLoading = false
     var caregivers: [CaregiverAccount]
     var medicationDoses: [MedicationDose]
     var medicationPlans: [MedicationPlan] = []
@@ -88,7 +113,6 @@ final class AppStore {
     var cameraCalibrationError: String?
     var cameraReferenceCaptureError: String?
     var cameraReferenceImages: [UUID: Data] = [:]
-    private var pendingCameraRoomID: UUID?
     private var pendingRoomPlanMapID: UUID?
     private var pendingRoomPlanUSDZData: Data?
     private struct PendingRoomPlanVisualUpload {
@@ -181,15 +205,29 @@ final class AppStore {
         return known + additional
     }
 
+    func analyticsConsent(for recipient: CareRecipient) -> Bool {
+        consents
+            .filter { $0.purpose == "analytics" && $0.careRecipientID == recipient.id }
+            .max { $0.updatedAt < $1.updatedAt }?
+            .enabled ?? false
+    }
+
     var canManageCareRecipients: Bool { role != .resident }
 
     static func configured() -> AppStore {
 #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("-one-show-family")
+        if ProcessInfo.processInfo.arguments.contains("-one-demo")
+            || ProcessInfo.processInfo.arguments.contains("-one-show-map")
+            || ProcessInfo.processInfo.arguments.contains("-one-show-family")
             || ProcessInfo.processInfo.arguments.contains("-one-show-care-spaces")
             || ProcessInfo.processInfo.arguments.contains("-one-show-care-space-create")
+            || ProcessInfo.processInfo.arguments.contains("-one-show-daily-check-in")
             || ProcessInfo.processInfo.arguments.contains("-one-show-settings") {
             let store = AppStore.demo
+            if ProcessInfo.processInfo.arguments.contains("-one-demo") || ProcessInfo.processInfo.arguments.contains("-one-show-map") {
+                store.configureMapPreview()
+                if ProcessInfo.processInfo.arguments.contains("-one-show-map") { store.selectedTab = "map" }
+            }
             if ProcessInfo.processInfo.arguments.contains("-one-show-family") {
                 store.selectedTab = "family"
             }
@@ -282,7 +320,7 @@ final class AppStore {
             MedicationDose(id: UUID(), medicationName: "Midday reminder", instructions: "After lunch", scheduledAt: midday, status: .needsConfirmation, assignedCaregiverName: "Joan Soler", careRecipientID: careRecipients[0].id, planID: middayPlanID),
             MedicationDose(id: UUID(), medicationName: "Evening reminder", instructions: "With dinner", scheduledAt: evening, status: .scheduled, assignedCaregiverName: nil, careRecipientID: careRecipients[1].id, planID: eveningPlanID)
         ]
-        let store = AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, careRecipients: careRecipients, medicationDoses: medicationDoses, medicationPlans: medicationPlans, careSpaces: CareSpaceSummary.demoSpaces, runtimeConfiguration: RuntimeConfiguration(info: [:]))
+        let store = AppStore(events: events, scan: scan, consents: consents, caregivers: caregivers, careRecipients: careRecipients, medicationDoses: medicationDoses, medicationPlans: medicationPlans, careSpaces: CareSpaceSummary.demoSpaces, sessionStore: InMemorySessionStore(), runtimeConfiguration: RuntimeConfiguration(info: [:]))
         store.selectedSubjectID = careRecipients[0].id
         store.selectedSubjectName = careRecipients[0].displayName
         store.cameraRooms = scan.zones.map { CameraRoom(id: $0.id, name: $0.name) }
@@ -290,6 +328,42 @@ final class AppStore {
         store.cameraCount = store.pairedCameras.count
         return store
     }
+
+#if DEBUG
+    /// A local scene for repeatable simulator interaction checks; never reads live home data.
+    private func configureMapPreview() {
+        let mapID = UUID()
+        let zoneID = scan.zones[0].id
+        let cameraIDs = [UUID(), UUID()]
+        let registrations = cameraIDs.enumerated().map { index, id in
+            CameraRegistrationDescriptor(
+                status: .positioned, cameraID: id,
+                cameraName: index == 0 ? "Living room camera" : "Kitchen camera",
+                roomID: zoneID, mapID: mapID, coordinateFrame: "preview",
+                cameraToWorld: [[1, 0, 0, index == 0 ? -1.7 : 1.7], [0, 1, 0, 1.5], [0, 0, 1, 2], [0, 0, 0, 1]],
+                confidence: 1, trackingState: "normal", source: "debug-preview"
+            )
+        }
+        pairedCameras = cameraIDs.enumerated().map { index, id in
+            PairedCamera(id: id, name: index == 0 ? "Living room camera" : "Kitchen camera", roomID: zoneID, status: index == 0 ? "online" : "offline")
+        }
+        cameraCount = pairedCameras.count
+        let people: [RoomObject] = (0..<3).map { index in
+            let position = SIMD3<Float>(Float(index - 1) * 1.8, 0, -2)
+            let state: PersonPresenceState = index == 2 ? .recent : .current
+            let observedAt = Date().addingTimeInterval(index == 2 ? -35 : -2)
+            return RoomObject(
+                id: UUID(), name: "person", category: "person", position: position,
+                dimensions: SIMD3<Float>(0.4, 1.7, 0.4), confidence: .high,
+                zoneID: zoneID, mapID: mapID, observedAt: observedAt, presenceState: state,
+                identityStatus: index == 0 ? "matched" : "unknown", identityName: index == 0 ? "María García" : nil
+            )
+        }
+        scan = RoomScan(id: scan.id, schemaVersion: scan.schemaVersion, capturedAt: scan.capturedAt, units: scan.units, upAxis: scan.upAxis, objects: people, zones: scan.zones, artifactHash: scan.artifactHash, exportedUSDZName: nil)
+        scene = SceneDescriptor(sceneID: UUID(), mapID: mapID, version: 1, dimension: .threeD, source: .arkitVideo3D, provenance: "debug-preview", approximate: true, metricScaleKnown: true, geometryStatus: "ready", rescanRequired: false, coordinateFrame: "preview", cameraRegistrations: registrations, geometry: nil, usdz: USDZAsset(available: true, sha256: nil, bytes: nil, contentType: nil, downloadPath: nil))
+        roomPlanModelURL = URL(string: "one-demo-map://layout")!
+    }
+#endif
 
     func toggleConsent(_ consent: ConsentRecord) {
         guard let index = consents.firstIndex(where: { $0.id == consent.id }) else { return }
@@ -357,6 +431,81 @@ final class AppStore {
             consentError = message
             authError = message
             return false
+        }
+    }
+
+    @discardableResult
+    func setAnalyticsConsent(for recipient: CareRecipient, enabled: Bool) async -> Bool {
+        let previousConsents = consents
+        // Person-specific analytics are scoped to the care-recipient record.
+        // Sending the caregiver subject as well makes the API reject the
+        // request because the consent contract accepts one scope at a time.
+        upsertCareRecipientAnalyticsConsent(for: recipient, enabled: enabled, subjectUserID: nil)
+
+        if runtimeConfiguration.isDemoMode {
+            consentError = nil
+            return true
+        }
+
+        guard let session else {
+            consents = previousConsents
+            consentError = OneAPIError.missingSession.localizedDescription
+            return false
+        }
+
+        isConsentMutating = true
+        consentError = nil
+        defer { isConsentMutating = false }
+        do {
+            try await apiClient.recordConsent(
+                homeID: session.homeID,
+                request: ConsentRequest(
+                    purpose: "analytics",
+                    policyVersion: "2026-09",
+                    granted: enabled,
+                    careRecipientID: recipient.id
+                )
+            )
+            _ = await refreshConsents()
+            authError = nil
+            return true
+        } catch {
+            consents = previousConsents
+            let message = (error as? LocalizedError)?.errorDescription ?? "Could not save this person’s analytics consent choice."
+            consentError = message
+            authError = message
+            return false
+        }
+    }
+
+    private func upsertCareRecipientAnalyticsConsent(for recipient: CareRecipient, enabled: Bool, subjectUserID: UUID?) {
+        if let index = consents.firstIndex(where: {
+            $0.purpose == "analytics"
+                && $0.careRecipientID == recipient.id
+                && $0.subjectUserID == subjectUserID
+        }) {
+            let existing = consents[index]
+            consents[index] = ConsentRecord(
+                id: existing.id,
+                purpose: existing.purpose,
+                enabled: enabled,
+                policyVersion: existing.policyVersion,
+                updatedAt: Date(),
+                subjectUserID: existing.subjectUserID,
+                careRecipientID: existing.careRecipientID
+            )
+        } else {
+            consents.append(
+                ConsentRecord(
+                    id: UUID(),
+                    purpose: "analytics",
+                    enabled: enabled,
+                    policyVersion: "2026-09",
+                    updatedAt: Date(),
+                    subjectUserID: subjectUserID,
+                    careRecipientID: recipient.id
+                )
+            )
         }
     }
 
@@ -567,6 +716,135 @@ final class AppStore {
             backendState = response.status == "ok" ? .connected : .unavailable
         } catch {
             backendState = .unavailable
+        }
+    }
+
+    var canManageHouseholdData: Bool {
+        guard let session, let active = activeCareSpace else { return false }
+        return active.id == session.homeID && active.role == .admin
+    }
+
+    func refreshDataReview() async {
+        guard let session else { return }
+        let homeID = session.homeID, recipientID = selectedSubjectID
+        let recipientName = selectedSubjectName
+        dayStoryReview = nil; activityReview = nil; collectionReview = nil; dataReviewError = nil
+        do {
+            if let recipientID {
+                let envelope = try await apiClient.dayStory(homeID: homeID, recipientID: recipientID, timezone: TimeZone.current.identifier)
+                guard self.session?.homeID == homeID, selectedSubjectID == recipientID else { return }
+                let story = envelope["data"]
+                guard story["recipient"].isObject else { throw OneAPIError.invalidResponse }
+                dayStoryReview = DayStoryReviewModel(
+                    recipientName: story["recipient"]["display_name"].string, headline: story["headline"].string,
+                    summary: story["summary"].string,
+                    attentionItems: story["attention_items"].array.map { .init(id: $0["id"].string, title: $0["title"].string, detail: $0["detail"].string) },
+                    coverageLabel: story["coverage"]["simple_label"].string, uncertainty: story["routine"]["reason"].string,
+                    facts: story["facts"].array.map { $0["text"].string },
+                    sources: story["facts"].array.flatMap { fact in zip(fact["source_ids"].strings, fact["times"].strings).map { "\($0.0) · \($0.1)" } },
+                    synthetic: story["synthetic"].bool
+                )
+            }
+            let analyticsEnvelope = try await apiClient.analyticsReview(homeID: homeID, recipientID: recipientID, timezone: TimeZone.current.identifier)
+            let collectionEnvelope = try await apiClient.collectionReview(homeID: homeID)
+            guard self.session?.homeID == homeID, selectedSubjectID == recipientID else { return }
+            let analytics = analyticsEnvelope["data"], collection = collectionEnvelope["data"]
+            guard analytics["activity"].isObject, collection.isObject else { throw OneAPIError.invalidResponse }
+            let activity = analytics["activity"], coverage = analytics["coverage"]
+            var limitations = coverage["limitations"].strings + analytics["limitations"].strings
+            if coverage["truncated"].bool { limitations.append("The retained record sample is bounded; some older evidence is omitted.") }
+            activityReview = ActivityReviewModel(
+                recipientName: recipientID == nil ? "Household observations" : recipientName,
+                windowLabel: reviewWindowLabel(analytics["window"]),
+                days: activity["by_day"].array.map { .init(date: $0["date"].string, count: $0["count"].int) },
+                totalObservations: activity["total_observations"].int,
+                trend: activity["trend"].string,
+                coverageLabel: "\(coverage["observed_days"].int) days with retained records · \(coverage["unobserved_days"].array.count) days without records",
+                limitations: limitations,
+                sources: activity["recent"].array.map { "\($0["source_id"].string) · \($0["observed_at"].string) · camera \($0["camera_id"].string)" },
+                synthetic: analytics["synthetic_provenance"].array.contains { $0["synthetic"].bool }
+            )
+            collectionReview = CollectionReviewModel(
+                evaluatedAt: collection["evaluated_at"].string,
+                status: collection["ready"].bool ? "Ready for observations" : "Setup needs attention",
+                blockers: collection["blockers"].strings.map(reviewBlocker),
+                cameras: collection["cameras"].array.map { camera in
+                    let placement = camera["placement"], freshness = camera["freshness"]
+                    return .init(id: camera["id"].string, name: camera["name"].string, status: camera["status"].string.capitalized,
+                                 placement: "\(placement["room_name"].string.isEmpty ? "No room" : placement["room_name"].string) · \(placement["status"].string.replacingOccurrences(of: "_", with: " "))",
+                                 freshness: freshness["last_observed_at"].string.isEmpty ? "No retained observation" : "Last record \(freshness["last_observed_at"].string)",
+                                 blockers: camera["blockers"].strings.map(reviewBlocker))
+                },
+                retention: "Derived records: \(collection["retention"]["observations_days"].int) days. Frames are processed in memory. Session validity does not prove frame arrival."
+            )
+        } catch {
+            guard self.session?.homeID == homeID, selectedSubjectID == recipientID else { return }
+            dataReviewError = error.localizedDescription
+        }
+    }
+
+    func refreshAssistantContextReview(message: String = "") async {
+        guard let session else { return }
+        let homeID = session.homeID, recipientID = selectedSubjectID
+        let recipientName = selectedSubjectName
+        isAssistantContextReviewLoading = true; assistantContextReview = nil; dataReviewError = nil
+        do {
+            let envelope = try await apiClient.assistantContextReview(homeID: homeID, recipientID: recipientID, timezone: TimeZone.current.identifier, message: message)
+            guard self.session?.homeID == homeID, selectedSubjectID == recipientID else { return }
+            let packet = envelope["data"]
+            let context = packet["bounded_context"]
+            guard context["window"].isObject else { throw OneAPIError.invalidResponse }
+            let observations = context["relevant_examples"]["observation"].array.map { "\($0["source_type"].string) \($0["source_id"].string) · \($0["observed_at"].string) · camera \($0["camera_id"].string)" }
+            let inferences = (context["relevant_examples"]["daily_check_in"].array + context["relevant_examples"]["event"].array).map { "\($0["source_type"].string) \($0["source_id"].string) · \($0["observed_at"].string) · \($0["status"].string)" }
+            var missing = context["missing_coverage"]["limitations"].strings
+            missing.append("Confirmation refreshes the same bounded scope using current retained records.")
+            if context["missing_coverage"]["truncated"].bool { missing.append("Context is bounded; older evidence has been omitted.") }
+            assistantContextReview = AssistantContextReviewModel(
+                scope: recipientID == nil ? "Your check-ins; camera records have no authenticated subject attribution" : recipientName,
+                windowLabel: reviewWindowLabel(context["window"]), observations: observations, inferences: inferences,
+                missingCoverage: missing,
+                syntheticProvenance: context["source_index"].array.filter { $0["synthetic"].bool }.prefix(8).map { "Simulated record · \($0["source_id"].string)" },
+                privacyBoundary: "Includes bounded retained metadata. Excludes " + context["privacy_boundary"]["excludes"].strings.joined(separator: ", ")
+            )
+            isAssistantContextReviewLoading = false
+        } catch {
+            guard self.session?.homeID == homeID, selectedSubjectID == recipientID else { return }
+            isAssistantContextReviewLoading = false
+            dataReviewError = error.localizedDescription
+        }
+    }
+
+    func exportHouseholdData() async throws -> Data {
+        guard let session, canManageHouseholdData else { throw OneAPIError.server(status: 403, message: "Household owner permission required.") }
+        return try await apiClient.exportHouseholdData(homeID: session.homeID)
+    }
+
+    func deleteHouseholdData(confirmationHomeID: String) async throws {
+        guard let session, canManageHouseholdData else { throw OneAPIError.server(status: 403, message: "Household owner permission required.") }
+        guard confirmationHomeID == session.homeID.uuidString, let confirmed = UUID(uuidString: confirmationHomeID) else { throw OneAPIError.server(status: 422, message: "Type the exact household ID to confirm.") }
+        try await apiClient.deleteHouseholdData(homeID: session.homeID, confirmationHomeID: confirmed)
+        // Server removed this household and invalidated its access; only local state remains.
+        try? sessionStore.delete(Self.sessionKey)
+        self.session = nil; careSpaces = []; hasCompletedOnboarding = false
+        clearHomeScopedState()
+        apiClient = HTTPOneAPIClient(configuration: runtimeConfiguration)
+        backendState = .unavailable
+    }
+
+    private func reviewWindowLabel(_ window: DataReviewJSON) -> String {
+        "\(window["window_days"].int) days · \(window["timezone"].string) · \(window["start_at"].string.prefix(10))–\(window["end_at"].string.prefix(10))"
+    }
+    private func reviewBlocker(_ code: String) -> String {
+        switch code {
+        case "video_capture_consent_required": "Capture consent is off"
+        case "home_paused": "Household collection is paused"
+        case "camera_offline": "Camera is offline"
+        case "room_required": "Assign a room"
+        case "placement_required": "Confirm a camera position"
+        case "observations_missing": "No retained observations"
+        case "observations_stale": "Retained observations are stale"
+        case "camera_disabled": "Camera is disabled"
+        default: code.replacingOccurrences(of: "_", with: " ")
         }
     }
 
@@ -821,8 +1099,8 @@ final class AppStore {
             careRecipientError = "Only a caregiver can set up recognition for a person in this care space."
             return false
         }
-        guard samples.count >= 3 else {
-            careRecipientError = "Capture at least three clear views before continuing."
+        guard samples.count >= 6 else {
+            careRecipientError = "Capture all six clear views before continuing."
             return false
         }
         isCareRecipientMutating = true
@@ -948,6 +1226,8 @@ final class AppStore {
     func sendFamilyAssistantMessage(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Context review is available only when the server says no provider is configured.
+        guard runtimeConfiguration.isDemoMode || assistantCapability?.state == .unconfigured else { return }
         familyAssistantMessages.append(AssistantMessage(isUser: true, text: trimmed))
         if runtimeConfiguration.isDemoMode {
             familyAssistantMessages.append(AssistantMessage(isUser: false, text: "Today's medication plan, daily check-in, and safety context are ready for review. This assistant summarizes observations; it does not diagnose."))
@@ -979,7 +1259,12 @@ final class AppStore {
             dailyCheckInResult = result
             if !runtimeConfiguration.isDemoMode { await refreshLiveData() }
         } catch {
-            dailyCheckInError = (error as? LocalizedError)?.errorDescription ?? "Could not record today’s check-in."
+            let message = (error as? LocalizedError)?.errorDescription ?? "Could not record today’s check-in."
+            if message.localizedCaseInsensitiveContains("analytics consent") {
+                dailyCheckInError = "Enable analytics for \(selectedSubjectName) in Account → Person-specific analytics, then try again."
+            } else {
+                dailyCheckInError = message
+            }
         }
         isDailyCheckInLoading = false
     }
@@ -1098,14 +1383,14 @@ final class AppStore {
         }
     }
 
-    func createRoom(name: String) async -> Bool {
+    func createRoom(id: UUID? = nil, name: String) async -> Bool {
         let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
         guard !trimmed.isEmpty else {
             roomError = "Room name cannot be empty."
             return false
         }
         if runtimeConfiguration.isDemoMode {
-            cameraRooms.append(CameraRoom(id: UUID(), name: trimmed))
+            cameraRooms.append(CameraRoom(id: id ?? UUID(), name: trimmed))
             roomError = nil
             return true
         }
@@ -1117,7 +1402,7 @@ final class AppStore {
         roomError = nil
         defer { isRoomMutating = false }
         do {
-            let room = try await apiClient.createRoom(homeID: session.homeID, name: trimmed)
+            let room = try await apiClient.createRoom(homeID: session.homeID, id: id, name: trimmed)
             cameraRooms.append(room)
             return true
         } catch {
@@ -1182,6 +1467,19 @@ final class AppStore {
             return true
         } catch {
             roomError = (error as? LocalizedError)?.errorDescription ?? "Could not delete this room."
+            return false
+        }
+    }
+
+    func importGeometry(data: Data) async -> Bool {
+        roomError = nil
+        do {
+            _ = try await apiClient.importGeometry(data: data)
+            await refreshCameraConfiguration()
+            await refreshScene()
+            return true
+        } catch {
+            roomError = error.localizedDescription
             return false
         }
     }
@@ -1277,7 +1575,8 @@ final class AppStore {
         z: Double,
         floorY: Double,
         height: Double,
-        yawDegrees: Double
+        yawDegrees: Double,
+        roomID: UUID? = nil
     ) async -> Bool {
         guard let session else {
             cameraCalibrationError = OneAPIError.missingSession.localizedDescription
@@ -1296,6 +1595,7 @@ final class AppStore {
             _ = try await apiClient.registerRoomPlanCamera(
                 homeID: session.homeID,
                 request: RoomPlanCameraRegistrationRequest(
+                    roomID: roomID,
                     cameraID: camera.id,
                     mapID: mapID,
                     cameraToWorld: matrix,
@@ -1323,7 +1623,7 @@ final class AppStore {
         }
     }
 
-    func startCameraPairing(label: String = "ONE room camera", roomID: UUID? = nil) async {
+    func startCameraPairing(label: String = "ONE room camera") async {
         guard role != .resident else {
             cameraPairingError = "Only a caregiver can pair a room camera."
             return
@@ -1338,7 +1638,7 @@ final class AppStore {
                 connectedAt: ISO8601DateFormatter().string(from: Date()),
                 device: .init(id: id, label: label, role: "publisher")
             )
-            pairedCameras.insert(PairedCamera(id: id, name: label, roomID: roomID, status: "online"), at: 0)
+            pairedCameras.insert(PairedCamera(id: id, name: label, roomID: nil, status: "online"), at: 0)
             cameraCount = pairedCameras.count
             cameraPairingError = nil
             return
@@ -1347,7 +1647,6 @@ final class AppStore {
         isCameraPairingBusy = true
         cameraPairingError = nil
         cameraPairingStatus = nil
-        pendingCameraRoomID = roomID
         defer { isCameraPairingBusy = false }
         do {
             cameraPairingChallenge = try await apiClient.startCameraPairing(homeID: session.homeID, label: label)
@@ -1365,16 +1664,6 @@ final class AppStore {
             cameraPairingError = nil
             if status.status == "connected" {
                 pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
-                if let roomID = pendingCameraRoomID,
-                   let camera = pairedCameras.first(where: { $0.id == status.device.id }),
-                   camera.roomID != roomID {
-                    try await apiClient.updateCamera(
-                        homeID: session.homeID,
-                        cameraID: camera.id,
-                        request: CameraUpdateRequest(name: camera.name, roomID: roomID)
-                    )
-                    pairedCameras = try await apiClient.pairedCameras(homeID: session.homeID)
-                }
                 cameraCount = pairedCameras.count
             }
         } catch {
@@ -1387,7 +1676,6 @@ final class AppStore {
         cameraPairingStatus = nil
         cameraPairingError = nil
         isCameraPairingBusy = false
-        pendingCameraRoomID = nil
     }
 
     func updateCamera(_ camera: PairedCamera, name: String, roomID: UUID?) async -> Bool {
@@ -1512,13 +1800,29 @@ final class AppStore {
         }
     }
 
-    func uploadRoomPlanStructure(_ structure: CapturedStructure, captures: [RoomPlanCaptureResult], cameraID: UUID?) async -> Bool {
+    func uploadRoomPlanStructure(_ structure: CapturedStructure, captures: [RoomPlanCaptureResult], roomNames: [String], cameraID: UUID?) async -> Bool {
         guard let lastCapture = captures.last else {
             authError = "Capture at least one room before finishing the home scan."
             return false
         }
         do {
-            let artifact = try RoomPlanArtifactBuilder.build(from: structure)
+            let roomSections = try captures.enumerated().map { index, capture -> RoomPlanSectionInput in
+                let floorCenters = capture.room.floors.map { surface in
+                    SIMD3<Float>(surface.transform.columns.3.x, surface.transform.columns.3.y, surface.transform.columns.3.z)
+                }
+                let centers = floorCenters.isEmpty ? capture.room.sections.map(\.center) : floorCenters
+                guard !centers.isEmpty else { throw RoomPlanNormalizationError.invalidGeometry }
+                let total = centers.reduce(SIMD3<Float>(repeating: 0), +)
+                let center = total / Float(centers.count)
+                let name = roomNames.indices.contains(index) ? roomNames[index] : "Room \(index + 1)"
+                return RoomPlanSectionInput(
+                    id: capture.room.identifier,
+                    label: name,
+                    center: center,
+                    story: capture.room.sections.first?.story ?? 0
+                )
+            }
+            let artifact = try RoomPlanArtifactBuilder.build(from: structure, roomSections: roomSections)
             let visualSamples = captures.flatMap(\.visualSamples)
             let diagnostics = RoomPlanVisualCaptureDiagnostics(
                 samplingAttempts: captures.reduce(0) { $0 + $1.visualDiagnostics.samplingAttempts },
@@ -2358,6 +2662,7 @@ final class AppStore {
     }
 
     private func clearHomeScopedState() {
+        resetAssistantChat(); assistantChatScope = nil
         events = []
         scan = .empty
         scene = .empty
@@ -2383,6 +2688,7 @@ final class AppStore {
         assistantMessages = []
         familyAssistantMessages = []
         lastDataRequest = nil
+        dayStoryReview = nil; activityReview = nil; collectionReview = nil; assistantContextReview = nil; dataReviewError = nil; isAssistantContextReviewLoading = false
     }
 
     @discardableResult
@@ -2496,4 +2802,209 @@ final class AppStore {
         guard session != nil else { return }
         do { try await apiClient.logout() } catch { /* Local credentials are cleared even if the network is unavailable. */ }
     }
+}
+
+extension AppStore {
+    var assistantCanSend: Bool {
+        assistantCapability?.state == .configured && assistantCapability?.requiresConsent == false
+            && !isAssistantStreaming && !isAssistantCancelling && assistantPendingQuestions == nil && assistantRetryOperation == nil
+    }
+    var assistantCanRetry: Bool { assistantRetryOperation != nil && assistantErrorRetryable && !isAssistantStreaming && !isAssistantCancelling }
+
+    func refreshAssistantCapability() async {
+        let recipientID = selectedSubjectID
+        let actor = session?.userID, homeID = session?.homeID
+        let scope = AssistantChatScope(homeID: homeID, actorID: actor, recipientID: recipientID)
+        if assistantChatScope != scope { resetAssistantChat(); assistantChatScope = scope }
+        let token = UUID(); assistantCapabilityLoadID = token
+        isAssistantCapabilityLoading = true
+        defer { if assistantCapabilityLoadID == token { isAssistantCapabilityLoading = false } }
+        if runtimeConfiguration.isDemoMode { assistantCapability = .debug; return }
+        guard let homeID else { assistantCapability = nil; assistantChatError = "Sign in to use the assistant."; return }
+        do {
+            let value = try await apiClient.assistantCapability(homeID: homeID, recipientID: recipientID)
+            guard assistantCapabilityLoadID == token, self.session?.homeID == homeID, self.session?.userID == actor, selectedSubjectID == recipientID else { return }
+            assistantCapability = value
+            if assistantRetryOperation == nil { assistantChatError = nil }
+        } catch {
+            guard assistantCapabilityLoadID == token, self.session?.homeID == homeID, selectedSubjectID == recipientID else { return }
+            assistantCapability = nil; assistantChatError = "Could not connect to the assistant. Try again."
+        }
+    }
+
+    func sendNormalAssistantMessage(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard assistantCanSend, !trimmed.isEmpty, let session else { return }
+        let scope = AssistantChatScope(homeID: session.homeID, actorID: session.userID, recipientID: selectedSubjectID)
+        guard scope == assistantChatScope else { return }
+        let request = AssistantChatRequest(requestID: UUID(), message: trimmed, careRecipientID: selectedSubjectID, conversationID: assistantConversationID, expectedRevision: assistantConversationID == nil ? nil : assistantRevision)
+        let operation = AssistantChatOperation.message(request)
+        assistantTurnSnapshot = normalAssistantMessages
+        normalAssistantMessages.append(AssistantVisibleMessage(isUser: true, text: trimmed))
+        runAssistantOperation(operation, scope: scope)
+    }
+
+    func setAssistantAnswer(questionID: String, optionID: String? = nil, customText: String? = nil) {
+        guard !isAssistantStreaming, let batch = assistantPendingQuestions, batch.questions.contains(where: { $0.id == questionID }) else { return }
+        assistantQuestionAnswers[questionID] = AssistantQuestionAnswer(questionID: questionID, optionID: optionID, customText: customText)
+    }
+    var assistantBatchComplete: Bool {
+        guard let batch = assistantPendingQuestions else { return false }
+        return batch.questions.allSatisfy { question in
+            guard let answer = assistantQuestionAnswers[question.id] else { return false }
+            if let option = answer.optionID { return answer.customText == nil && question.options.contains { $0.id == option } }
+            return answer.customText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+    }
+    func submitAssistantAnswers() {
+        guard assistantBatchComplete, !isAssistantStreaming, !isAssistantCancelling, assistantRetryOperation == nil,
+              let scope = assistantChatScope, let conversationID = assistantConversationID, let batch = assistantPendingQuestions else { return }
+        let answers = batch.questions.compactMap { assistantQuestionAnswers[$0.id] }.map {
+            AssistantQuestionAnswer(questionID: $0.questionID, optionID: $0.optionID, customText: $0.customText?.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let request = AssistantAnswersRequest(requestID: UUID(), expectedRevision: assistantRevision, toolCallID: batch.toolCallID, answers: answers)
+        runAssistantOperation(.answers(conversationID, request), scope: scope)
+    }
+
+    private func runAssistantOperation(_ operation: AssistantChatOperation, scope: AssistantChatScope) {
+        guard let homeID = scope.homeID else { return }
+        assistantStreamTask?.cancel()
+        let token = UUID(); assistantActiveStreamID = token
+        assistantRetryOperation = operation; isAssistantStreaming = true; assistantChatError = nil; assistantErrorRetryable = false; assistantServerFailed = false
+        assistantStreamingText = ""
+        assistantStreamTask = Task { [weak self] in
+            guard let self else { return }
+            var receivedDone = false, receivedCompletion = false, receivedQuestions = false
+            let stream: AsyncThrowingStream<AssistantStreamEvent, Error>
+            switch operation {
+            case .message(let request): stream = apiClient.assistantChat(homeID: homeID, request: request)
+            case .answers(let conversationID, let request): stream = apiClient.assistantAnswers(homeID: homeID, conversationID: conversationID, request: request)
+            }
+            do {
+                for try await event in stream {
+                    try Task.checkCancellation()
+                    guard assistantActiveStreamID == token, assistantChatScope == scope,
+                          session?.homeID == scope.homeID, session?.userID == scope.actorID, selectedSubjectID == scope.recipientID else { return }
+                    guard event.requestID == operation.requestID,
+                          assistantConversationID == nil || assistantConversationID == event.conversationID,
+                          event.revision >= assistantRevision else { throw OneAPIError.invalidResponse }
+                    assistantConversationID = event.conversationID; assistantRevision = event.revision
+                    switch event.payload {
+                    case .started: break
+                    case .delta(let text): assistantStreamingText += text
+                    case .questions(let batch):
+                        guard !receivedQuestions else { throw OneAPIError.invalidResponse }
+                        receivedQuestions = true
+                        if assistantPendingQuestions?.toolCallID != batch.toolCallID { assistantQuestionAnswers = [:] }
+                        assistantPendingQuestions = batch
+                    case .completed(let text): assistantStreamingText = text; receivedCompletion = true
+                    case .error(let code, let message, let retryable):
+                        assistantChatError = message; assistantErrorRetryable = retryable; assistantServerFailed = true
+                        if code == "external_consent_required" || code == "authorization_changed" { Task { await self.refreshAssistantCapability() } }
+                    case .done(let status):
+                        guard !receivedDone else { throw OneAPIError.invalidResponse }; receivedDone = true
+                        switch status {
+                        case "completed":
+                            guard receivedCompletion, !assistantServerFailed else { throw OneAPIError.invalidResponse }
+                            normalAssistantMessages.append(AssistantVisibleMessage(isUser: false, text: assistantStreamingText))
+                            assistantStreamingText = ""; assistantPendingQuestions = nil; assistantQuestionAnswers = [:]; assistantRetryOperation = nil; assistantTurnSnapshot = normalAssistantMessages
+                        case "awaiting_answers":
+                            guard receivedQuestions, !assistantServerFailed else { throw OneAPIError.invalidResponse }
+                            if !assistantStreamingText.isEmpty { normalAssistantMessages.append(AssistantVisibleMessage(isUser: false, text: assistantStreamingText)); assistantStreamingText = "" }
+                            assistantRetryOperation = nil
+                        case "failed":
+                            assistantServerFailed = true
+                            if assistantChatError == nil { assistantChatError = "The assistant could not finish. Please try again."; assistantErrorRetryable = true }
+                        default: assistantChatError = "This response was cancelled."; assistantErrorRetryable = false
+                        }
+                    }
+                }
+                guard receivedDone else { throw URLError(.networkConnectionLost) }
+            } catch {
+                guard !Task.isCancelled, assistantActiveStreamID == token, assistantChatScope == scope else { return }
+                assistantChatError = "The response was interrupted. Retry to reconnect, or cancel this turn."
+                assistantErrorRetryable = true
+            }
+            if assistantActiveStreamID == token { isAssistantStreaming = false; assistantStreamTask = nil }
+        }
+    }
+
+    func retryAssistantResponse() async {
+        guard assistantCanRetry, let operation = assistantRetryOperation, let scope = assistantChatScope else { return }
+        if assistantServerFailed, let homeID = scope.homeID, let conversationID = assistantConversationID {
+            isAssistantCancelling = true
+            do {
+                // Failed streams already rolled back on the server. Reload the
+                // pending batch; cancellation would discard its tool-call ID.
+                let restored = try await apiClient.assistantConversation(homeID: homeID, conversationID: conversationID)
+                guard assistantChatScope == scope else { return }
+                assistantRevision = restored.revision
+                isAssistantCancelling = false
+                switch operation {
+                case .message(let old):
+                    guard restored.pending == nil else { throw OneAPIError.invalidResponse }
+                    runAssistantOperation(.message(AssistantChatRequest(requestID: UUID(), message: old.message, careRecipientID: old.careRecipientID, conversationID: conversationID, expectedRevision: restored.revision)), scope: scope)
+                case .answers(_, let old):
+                    guard restored.pending?.toolCallID == old.toolCallID else { throw OneAPIError.invalidResponse }
+                    assistantPendingQuestions = restored.pending
+                    runAssistantOperation(.answers(conversationID, AssistantAnswersRequest(requestID: UUID(), expectedRevision: restored.revision, toolCallID: old.toolCallID, answers: old.answers)), scope: scope)
+                }
+            } catch { if assistantChatScope == scope { isAssistantCancelling = false; assistantChatError = "Could not reconnect. Try again." } }
+        } else { runAssistantOperation(operation, scope: scope) }
+    }
+
+    func startNewAssistantConversation() async -> Bool {
+        guard !isAssistantCancelling, !isAssistantCapabilityLoading else { return false }
+        let scope = assistantChatScope
+        if isAssistantStreaming || assistantPendingQuestions != nil || assistantRetryOperation != nil {
+            await cancelAssistantTurn()
+            guard assistantChatScope == scope, !isAssistantCancelling,
+                  assistantRetryOperation == nil, assistantPendingQuestions == nil else { return false }
+        }
+        guard assistantChatScope == scope else { return false }
+        resetAssistantChat()
+        familyAssistantMessages = [AssistantMessage(isUser: false, text: "Ask about today’s plan, check-ins, or observations. I do not diagnose or make care decisions.")]
+        await refreshAssistantCapability()
+        return assistantChatScope == scope
+    }
+
+    func cancelAssistantTurn() async {
+        guard !isAssistantCancelling, let scope = assistantChatScope else { return }
+        assistantActiveStreamID = UUID(); assistantStreamTask?.cancel(); assistantStreamTask = nil; isAssistantStreaming = false
+        guard let homeID = scope.homeID, let conversationID = assistantConversationID else {
+            if assistantRetryOperation != nil {
+                assistantChatError = "Reconnect with Retry before cancellation can be confirmed."
+                assistantErrorRetryable = true
+            }
+            return
+        }
+        isAssistantCancelling = true
+        do {
+            let restored = try await apiClient.cancelAssistantConversation(homeID: homeID, conversationID: conversationID, requestID: UUID(), revision: assistantRevision)
+            guard assistantChatScope == scope, session?.homeID == homeID, selectedSubjectID == scope.recipientID else { return }
+            assistantRevision = restored.revision
+            normalAssistantMessages = restored.messages.filter { ["user", "assistant"].contains($0.role) }.map { AssistantVisibleMessage(isUser: $0.role == "user", text: $0.content) }
+            assistantTurnSnapshot = normalAssistantMessages; assistantPendingQuestions = restored.pending
+            assistantQuestionAnswers = [:]; assistantStreamingText = ""; assistantRetryOperation = nil; assistantChatError = nil
+        } catch { if assistantChatScope == scope { assistantChatError = "Cancellation could not be confirmed. Try again before continuing." } }
+        if assistantChatScope == scope { isAssistantCancelling = false }
+    }
+
+    func resetAssistantChat() {
+        assistantActiveStreamID = UUID(); assistantCapabilityLoadID = UUID(); assistantStreamTask?.cancel(); assistantStreamTask = nil
+        assistantCapability = nil; assistantConversationID = nil; assistantRevision = 0; normalAssistantMessages = []
+        assistantStreamingText = ""; assistantPendingQuestions = nil; assistantQuestionAnswers = [:]; assistantRetryOperation = nil
+        assistantTurnSnapshot = []; assistantChatError = nil; isAssistantStreaming = false; isAssistantCancelling = false; isAssistantCapabilityLoading = false
+    }
+}
+
+struct AssistantVisibleMessage: Identifiable, Sendable {
+    let id = UUID()
+    let isUser: Bool
+    let text: String
+}
+private struct AssistantChatScope: Equatable { let homeID: UUID?; let actorID: UUID?; let recipientID: UUID? }
+private enum AssistantChatOperation {
+    case message(AssistantChatRequest), answers(UUID, AssistantAnswersRequest)
+    var requestID: UUID { switch self { case .message(let request): request.requestID; case .answers(_, let request): request.requestID } }
 }

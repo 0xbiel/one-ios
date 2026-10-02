@@ -282,12 +282,16 @@ struct MedicationCheckInRequest: Codable, Sendable {
 struct FamilyAssistantRequest: Codable, Sendable {
     let message: String
     let careRecipientID: UUID?
+    var windowDays: Int = 14
+    var timezoneName: String = TimeZone.current.identifier
 
-    private enum CodingKeys: String, CodingKey { case message, careRecipientID }
+    private enum CodingKeys: String, CodingKey { case message, careRecipientID, windowDays, timezoneName }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(message, forKey: .message)
+        try container.encode(windowDays, forKey: .windowDays)
+        try container.encode(timezoneName, forKey: .timezoneName)
         if let careRecipientID {
             try container.encode(careRecipientID.uuidString.lowercased(), forKey: .careRecipientID)
         }
@@ -405,6 +409,7 @@ struct USDZUploadResponse: Decodable, Sendable, Equatable {
     }
 }
 struct RoomPlanCameraRegistrationRequest: Codable, Sendable, Equatable {
+    var roomID: UUID? = nil
     let cameraID: UUID
     let mapID: UUID
     let cameraToWorld: [[Double]]
@@ -421,6 +426,11 @@ struct RoomPlanCameraRegistrationResponse: Codable, Sendable, Equatable {
     let confidence: Double?
     let trackingState: String
     let source: String
+    private enum CodingKeys: String, CodingKey {
+        case id, status, coordinateFrame, cameraToWorld, confidence, trackingState, source
+        case cameraID = "cameraId"
+        case mapID = "mapId"
+    }
 }
 struct Matrix3x3Request: Codable, Sendable, Equatable {
     let values: [[Double]]
@@ -506,7 +516,7 @@ protocol OneAPIClient: Sendable {
     func roomObjects(homeID: UUID) async throws -> [RoomObject]
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera]
     func cameraRooms(homeID: UUID) async throws -> [CameraRoom]
-    func createRoom(homeID: UUID, name: String) async throws -> CameraRoom
+    func createRoom(homeID: UUID, id: UUID?, name: String) async throws -> CameraRoom
     func updateRoom(homeID: UUID, roomID: UUID, name: String) async throws -> CameraRoom
     func deleteRoom(homeID: UUID, roomID: UUID) async throws
     func cameraCount(homeID: UUID) async throws -> Int
@@ -538,11 +548,17 @@ protocol OneAPIClient: Sendable {
     func medicationReminders(homeID: UUID, careRecipientID: UUID?, day: Date) async throws -> [MedicationDose]
     func recordMedicationCheckIn(homeID: UUID, planID: UUID, request: MedicationCheckInRequest) async throws
     func familyAssistant(homeID: UUID, request: FamilyAssistantRequest) async throws -> FamilyAssistantResult
+    func assistantCapability(homeID: UUID, recipientID: UUID?) async throws -> AssistantCapability
+    func assistantChat(homeID: UUID, request: AssistantChatRequest) -> AsyncThrowingStream<AssistantStreamEvent, Error>
+    func assistantAnswers(homeID: UUID, conversationID: UUID, request: AssistantAnswersRequest) -> AsyncThrowingStream<AssistantStreamEvent, Error>
+    func assistantConversation(homeID: UUID, conversationID: UUID) async throws -> AssistantConversation
+    func cancelAssistantConversation(homeID: UUID, conversationID: UUID, requestID: UUID, revision: Int) async throws -> AssistantConversation
     func recordConsent(homeID: UUID, request: ConsentRequest) async throws
     func consents(homeID: UUID) async throws -> [ConsentRecord]
     func logout() async throws
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse
+    func importGeometry(data: Data) async throws -> RoomPlanMapUploadResponse
     func uploadARVideoRoom(scan: ARVideoRoomScan) async throws -> RoomPlanMapUploadResponse
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse
     func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse
@@ -550,6 +566,12 @@ protocol OneAPIClient: Sendable {
     func downloadRoomPlanUSDZ(mapID: UUID) async throws -> Data
     func refreshScene(homeID: UUID) async throws -> SceneDescriptor
     func liveKitToken(cameraID: UUID) async throws -> LiveKitTokenResponse
+    func dayStory(homeID: UUID, recipientID: UUID, timezone: String) async throws -> DataReviewJSON
+    func analyticsReview(homeID: UUID, recipientID: UUID?, timezone: String) async throws -> DataReviewJSON
+    func collectionReview(homeID: UUID) async throws -> DataReviewJSON
+    func assistantContextReview(homeID: UUID, recipientID: UUID?, timezone: String, message: String) async throws -> DataReviewJSON
+    func exportHouseholdData(homeID: UUID) async throws -> Data
+    func deleteHouseholdData(homeID: UUID, confirmationHomeID: UUID) async throws
     func requestExport() async throws -> DataRequestResponse
     func requestDeletion() async throws -> DataRequestResponse
 }
@@ -682,7 +704,7 @@ struct MockOneAPIClient: OneAPIClient {
     func roomObjects(homeID: UUID) async throws -> [RoomObject] { [] }
     func pairedCameras(homeID: UUID) async throws -> [PairedCamera] { [] }
     func cameraRooms(homeID: UUID) async throws -> [CameraRoom] { [] }
-    func createRoom(homeID: UUID, name: String) async throws -> CameraRoom { CameraRoom(id: UUID(), name: name) }
+    func createRoom(homeID: UUID, id: UUID?, name: String) async throws -> CameraRoom { CameraRoom(id: id ?? UUID(), name: name) }
     func updateRoom(homeID: UUID, roomID: UUID, name: String) async throws -> CameraRoom { CameraRoom(id: roomID, name: name) }
     func deleteRoom(homeID: UUID, roomID: UUID) async throws { }
     func cameraCount(homeID: UUID) async throws -> Int { 0 }
@@ -747,6 +769,7 @@ struct MockOneAPIClient: OneAPIClient {
     func logout() async throws { }
     func uploadRoomScan(roomID: UUID, normalizedJSON: Data, usdz: Data?) async throws -> ArtifactUploadResponse { ArtifactUploadResponse(artifactID: UUID(), sha256: "local-demo", expiresAt: nil) }
     func uploadRoomPlan(roomID: UUID?, scan: RoomPlanNormalizedScan, metadata: RoomPlanScanMetadata) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID()) }
+    func importGeometry(data: Data) async throws -> RoomPlanMapUploadResponse { throw OneAPIError.invalidResponse }
     func uploadARVideoRoom(scan: ARVideoRoomScan) async throws -> RoomPlanMapUploadResponse { RoomPlanMapUploadResponse(mapID: UUID(), source: .arkitVideo3D, coordinateFrame: "arkit-world", usdz: USDZAsset(available: true, sha256: "local-demo", bytes: 1, contentType: "model/vnd.usdz+zip", downloadPath: nil)) }
     func uploadRoomPlanUSDZ(mapID: UUID, data: Data) async throws -> USDZUploadResponse { USDZUploadResponse(mapID: mapID, usdz: USDZAsset(available: true, sha256: "local-demo", bytes: data.count, contentType: "model/vnd.usdz+zip", downloadPath: nil)) }
     func uploadRoomPlanVisualLandmarks(mapID: UUID, frames: [RoomPlanVisualLandmarkFrameRequest]) async throws -> RoomPlanVisualLandmarksResponse { RoomPlanVisualLandmarksResponse(mapID: mapID, status: "ready", landmarkCount: 128, detector: "opencv-orb") }
@@ -878,8 +901,10 @@ struct HTTPOneAPIClient: OneAPIClient {
         return response.data
     }
 
-    func createRoom(homeID: UUID, name: String) async throws -> CameraRoom {
-        let body = try JSONSerialization.data(withJSONObject: ["name": name])
+    func createRoom(homeID: UUID, id: UUID?, name: String) async throws -> CameraRoom {
+        var payload: [String: Any] = ["name": name]
+        if let id { payload["id"] = id.uuidString }
+        let body = try JSONSerialization.data(withJSONObject: payload)
         return try await send(path: "/homes/\(homeID.oneAPIPath)/rooms", method: "POST", body: body, requiresSession: true)
     }
 
@@ -1106,6 +1131,11 @@ struct HTTPOneAPIClient: OneAPIClient {
         return try await send(path: "/homes/\(homeID.oneAPIPath)/maps/roomplan", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
     }
 
+    func importGeometry(data: Data) async throws -> RoomPlanMapUploadResponse {
+        guard let homeID else { throw OneAPIError.missingSession }
+        return try await send(path: "/homes/\(homeID.oneAPIPath)/maps/imported-3d", method: "POST", body: data, requiresSession: true)
+    }
+
     func uploadARVideoRoom(scan: ARVideoRoomScan) async throws -> RoomPlanMapUploadResponse {
         guard let homeID else { throw OneAPIError.missingSession }
         let body = try JSONEncoder.one.encode(scan)
@@ -1129,6 +1159,10 @@ struct HTTPOneAPIClient: OneAPIClient {
     }
 
     func registerRoomPlanCamera(homeID: UUID, request: RoomPlanCameraRegistrationRequest) async throws -> RoomPlanCameraRegistrationResponse {
+        if let roomID = request.roomID {
+            let body = try JSONSerialization.data(withJSONObject: ["camera_id": request.cameraID.oneAPIPath, "map_id": request.mapID.oneAPIPath, "room_id": roomID.oneAPIPath, "camera_to_world": request.cameraToWorld, "confirmed": true])
+            return try await send(path: "/homes/\(homeID.oneAPIPath)/camera-registrations/manual", method: "POST", body: body, requiresSession: true)
+        }
         let body = try JSONEncoder.one.encode(request)
         return try await send(path: "/homes/\(homeID.oneAPIPath)/camera-registrations/roomplan", method: "POST", body: body, requiresSession: true, headers: ["X-ONE-Client": "native-ios-roomplan"])
     }
@@ -1150,6 +1184,37 @@ struct HTTPOneAPIClient: OneAPIClient {
         return LiveKitTokenResponse(websocketURL: url, token: response.token, roomName: "one-\(homeID.oneAPIPath)", expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)))
     }
 
+    private func dataReviewURL(homeID: UUID, endpoint: String, recipientID: UUID?, timezone: String) throws -> URL {
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/\(endpoint)"), resolvingAgainstBaseURL: false)
+        var items = [URLQueryItem(name: "window_days", value: "14"), URLQueryItem(name: "timezone_name", value: timezone)]
+        if let recipientID { items.append(URLQueryItem(name: "care_recipient_id", value: recipientID.oneAPIPath)) }
+        components?.queryItems = items
+        guard let url = components?.url else { throw OneAPIError.invalidResponse }
+        return url
+    }
+    func dayStory(homeID: UUID, recipientID: UUID, timezone: String) async throws -> DataReviewJSON {
+        try await send(url: dataReviewURL(homeID: homeID, endpoint: "day-story", recipientID: recipientID, timezone: timezone), method: "GET", body: nil, requiresSession: true)
+    }
+    func analyticsReview(homeID: UUID, recipientID: UUID?, timezone: String) async throws -> DataReviewJSON {
+        try await send(url: dataReviewURL(homeID: homeID, endpoint: "analytics", recipientID: recipientID, timezone: timezone), method: "GET", body: nil, requiresSession: true)
+    }
+    func collectionReview(homeID: UUID) async throws -> DataReviewJSON {
+        try await send(path: "/homes/\(homeID.oneAPIPath)/collection-readiness", method: "GET", body: nil, requiresSession: true)
+    }
+    func assistantContextReview(homeID: UUID, recipientID: UUID?, timezone: String, message: String) async throws -> DataReviewJSON {
+        var components = URLComponents(url: try dataReviewURL(homeID: homeID, endpoint: "assistant-context", recipientID: recipientID, timezone: timezone), resolvingAgainstBaseURL: false)!
+        components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "message", value: message)]
+        return try await send(url: components.url!, method: "GET", body: nil, requiresSession: true)
+    }
+    func exportHouseholdData(homeID: UUID) async throws -> Data {
+        try await sendRaw(path: "/homes/\(homeID.oneAPIPath)/privacy/export", method: "POST", body: nil, requiresSession: true, headers: ["Accept": "application/json"])
+    }
+    func deleteHouseholdData(homeID: UUID, confirmationHomeID: UUID) async throws {
+        guard confirmationHomeID == homeID else { throw OneAPIError.server(status: 422, message: "Confirmation does not match this household.") }
+        let body = try JSONSerialization.data(withJSONObject: ["confirmed": true, "confirmation_home_id": confirmationHomeID.oneAPIPath])
+        let _: BackendDeletionResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/privacy/delete", method: "POST", body: body, requiresSession: true)
+    }
+
     func requestExport() async throws -> DataRequestResponse {
         guard let homeID else { throw OneAPIError.missingSession }
         _ = try await send(path: "/homes/\(homeID.oneAPIPath)/privacy/export", method: "POST", body: nil, requiresSession: true) as BackendExportResponse
@@ -1158,8 +1223,7 @@ struct HTTPOneAPIClient: OneAPIClient {
 
     func requestDeletion() async throws -> DataRequestResponse {
         guard let homeID else { throw OneAPIError.missingSession }
-        let response: BackendDeletionResponse = try await send(path: "/homes/\(homeID.oneAPIPath)/privacy/delete", method: "POST", body: nil, requiresSession: true)
-        return DataRequestResponse(requestID: UUID(uuidString: response.requestID) ?? UUID(), status: response.status)
+        throw OneAPIError.server(status: 422, message: "Explicit household confirmation is required before deletion.")
     }
 
     private func send<T: Decodable>(path: String, method: String, body: Data?, requiresSession: Bool, headers: [String: String] = [:], timeoutInterval: TimeInterval? = nil) async throws -> T {
@@ -1336,9 +1400,19 @@ private struct BackendEvent: Decodable {
     }
 }
 private struct BackendObjectsResponse: Decodable { let data: [BackendObject] }
+private struct BackendObjectIdentity: Decodable {
+    let status: String?
+    let displayName: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case displayName
+    }
+}
 private struct BackendObject: Decodable {
     let id: String
     let label: String
+    let objectType: String?
     let lastSeenAt: Date?
     let point: BackendPoint?
     let worldPoint: BackendPoint?
@@ -1346,6 +1420,7 @@ private struct BackendObject: Decodable {
     let cameraId: String?
     let confidence: Double?
     let presenceState: PersonPresenceState?
+    let identity: BackendObjectIdentity?
 
     var object: RoomObject? {
         guard let id = UUID(uuidString: id) else { return nil }
@@ -1358,8 +1433,8 @@ private struct BackendObject: Decodable {
         }
         return RoomObject(
             id: id,
-            name: label,
-            category: label.lowercased(),
+            name: objectType == "person" ? "person" : label,
+            category: (objectType ?? label).lowercased(),
             position: SIMD3(Float(mappedPoint.x ?? 0), Float(mappedPoint.y ?? 0), Float(mappedPoint.z ?? 0)),
             dimensions: SIMD3(repeating: 0),
             confidence: confidenceLevel,
@@ -1367,7 +1442,9 @@ private struct BackendObject: Decodable {
             mapID: mapId.flatMap(UUID.init(uuidString:)),
             cameraID: cameraId.flatMap(UUID.init(uuidString:)),
             observedAt: lastSeenAt,
-            presenceState: presenceState
+            presenceState: presenceState,
+            identityStatus: identity?.status,
+            identityName: identity?.displayName
         )
     }
 }
@@ -1396,13 +1473,15 @@ private struct BackendCamera: Decodable {
     let id: String
     let name: String
     let roomID: String?
+    struct Simulation: Decodable { let status: String? }
+    let simulation: Simulation?
     let status: String
     let calibrationNeeded: Bool?
     let roomplanRegistrationStatus: String?
     let roomplanMapID: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, status, calibrationNeeded, roomplanRegistrationStatus
+        case id, name, simulation, status, calibrationNeeded, roomplanRegistrationStatus
         case roomID = "roomId"
         case roomplanMapID = "roomplanMapId"
     }
@@ -1414,6 +1493,7 @@ private struct BackendCamera: Decodable {
             name: name,
             roomID: roomID.flatMap(UUID.init(uuidString:)),
             status: status,
+            simulationStatus: simulation?.status,
             calibrationNeeded: calibrationNeeded ?? false,
             roomplanRegistrationStatus: roomplanRegistrationStatus ?? "map_required",
             roomplanMapID: roomplanMapID.flatMap(UUID.init(uuidString:))
@@ -1525,4 +1605,212 @@ private extension JSONDecoder {
 protocol LiveKitViewingSession: Sendable {
     func joinSubscribeOnly(using token: LiveKitTokenResponse) async throws
     func leave() async
+}
+
+// Normal assistant transport deliberately decodes only public presentation events.
+struct AssistantCapability: Codable, Sendable, Equatable {
+    enum State: String, Codable, Sendable { case unconfigured, configured, unavailable }
+    let state: State
+    let mode: String
+    let provider: String?
+    let external: Bool
+    let reason: String?
+    let requiresConsent: Bool
+    let toolsSupported: Bool
+    enum CodingKeys: String, CodingKey {
+        case state, mode, provider, external, reason
+        case requiresConsent = "requires_consent", toolsSupported = "tools_supported"
+    }
+    static let debug = Self(state: .unconfigured, mode: "debug", provider: nil, external: false, reason: nil, requiresConsent: false, toolsSupported: true)
+}
+
+struct AssistantQuestionOption: Codable, Sendable, Identifiable, Equatable {
+    let id: String
+    let label: String
+    let description: String
+}
+struct AssistantQuestion: Codable, Sendable, Identifiable, Equatable {
+    let id: String
+    let header: String
+    let question: String
+    let options: [AssistantQuestionOption]
+}
+struct AssistantQuestionBatch: Codable, Sendable, Equatable {
+    let toolCallID: String
+    let questions: [AssistantQuestion]
+    enum CodingKeys: String, CodingKey { case toolCallID = "tool_call_id", questions }
+    func validate() throws {
+        guard !toolCallID.isEmpty, (1...3).contains(questions.count), Set(questions.map(\.id)).count == questions.count else { throw OneAPIError.invalidResponse }
+        for question in questions {
+            guard !question.id.isEmpty, !question.question.isEmpty, (2...3).contains(question.options.count),
+                  Set(question.options.map(\.id)).count == question.options.count,
+                  question.options.allSatisfy({ !$0.id.isEmpty && !$0.label.isEmpty }) else { throw OneAPIError.invalidResponse }
+        }
+    }
+}
+struct AssistantQuestionAnswer: Codable, Sendable, Equatable {
+    let questionID: String
+    var optionID: String?
+    var customText: String?
+    enum CodingKeys: String, CodingKey { case questionID = "question_id", optionID = "option_id", customText = "custom_text" }
+}
+struct AssistantChatRequest: Codable, Sendable {
+    let requestID: UUID
+    let message: String
+    let careRecipientID: UUID?
+    let conversationID: UUID?
+    let expectedRevision: Int?
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id", message, careRecipientID = "care_recipient_id", conversationID = "conversation_id", expectedRevision = "expected_revision"
+    }
+}
+struct AssistantAnswersRequest: Codable, Sendable {
+    let requestID: UUID
+    let expectedRevision: Int
+    let toolCallID: String
+    let answers: [AssistantQuestionAnswer]
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id", expectedRevision = "expected_revision", toolCallID = "tool_call_id", answers
+    }
+}
+struct AssistantConversation: Codable, Sendable {
+    struct Message: Codable, Sendable { let role: String; let content: String }
+    let conversationID: UUID
+    let revision: Int
+    let status: String
+    let pending: AssistantQuestionBatch?
+    let messages: [Message]
+    enum CodingKeys: String, CodingKey { case conversationID = "conversation_id", revision, status, pending, messages }
+}
+struct AssistantStreamEvent: Sendable {
+    enum Payload: Sendable {
+        case started, delta(String), questions(AssistantQuestionBatch), completed(String)
+        case error(code: String, message: String, retryable: Bool), done(String)
+    }
+    let conversationID: UUID
+    let requestID: UUID
+    let revision: Int
+    let payload: Payload
+}
+
+/// Buffers bytes before UTF-8 decoding, so split Unicode and split JSON are safe.
+struct AssistantSSEParser {
+    private var line = Data()
+    private var eventName = ""
+    private var dataLines: [String] = []
+    private var frameBytes = 0
+    mutating func feed(_ bytes: Data) throws -> [AssistantStreamEvent] {
+        var events: [AssistantStreamEvent] = []
+        for byte in bytes {
+            frameBytes += 1
+            guard frameBytes <= 262_144 else { throw OneAPIError.invalidResponse }
+            if byte == 10 {
+                if line.last == 13 { line.removeLast() }
+                guard let text = String(data: line, encoding: .utf8) else { throw OneAPIError.invalidResponse }
+                line.removeAll(keepingCapacity: true)
+                if text.isEmpty {
+                    if let event = try dispatch() { events.append(event) }
+                    eventName = ""; dataLines = []; frameBytes = 0
+                } else if text.hasPrefix("event:") { eventName = String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces) }
+                else if text.hasPrefix("data:") {
+                    var value = String(text.dropFirst(5)); if value.first == " " { value.removeFirst() }; dataLines.append(value)
+                }
+            } else { line.append(byte) }
+        }
+        return events
+    }
+    private func dispatch() throws -> AssistantStreamEvent? {
+        let known = ["conversation.started", "assistant.delta", "questions.required", "assistant.completed", "stream.error", "stream.done"]
+        guard known.contains(eventName) else { return nil }
+        struct Envelope: Decodable {
+            let conversation_id: UUID; let request_id: UUID; let revision: Int
+            let text: String?; let tool_call_id: String?; let questions: [AssistantQuestion]?
+            let code: String?; let message: String?; let retryable: Bool?; let status: String?
+        }
+        let decoded = try JSONDecoder().decode(Envelope.self, from: Data(dataLines.joined(separator: "\n").utf8))
+        guard decoded.revision >= 0 else { throw OneAPIError.invalidResponse }
+        let payload: AssistantStreamEvent.Payload
+        switch eventName {
+        case "conversation.started": payload = .started
+        case "assistant.delta", "assistant.completed":
+            guard let text = decoded.text, !text.contains("<|"), !text.contains("[start]") else { throw OneAPIError.invalidResponse }
+            payload = eventName == "assistant.delta" ? .delta(text) : .completed(text)
+        case "questions.required":
+            guard let id = decoded.tool_call_id, let questions = decoded.questions else { throw OneAPIError.invalidResponse }
+            let batch = AssistantQuestionBatch(toolCallID: id, questions: questions); try batch.validate(); payload = .questions(batch)
+        case "stream.error": payload = .error(code: decoded.code ?? "unavailable", message: decoded.message ?? "The assistant is unavailable. Please try again.", retryable: decoded.retryable ?? false)
+        default:
+            guard let status = decoded.status, ["completed", "awaiting_answers", "failed", "cancelled"].contains(status) else { throw OneAPIError.invalidResponse }
+            payload = .done(status)
+        }
+        return AssistantStreamEvent(conversationID: decoded.conversation_id, requestID: decoded.request_id, revision: decoded.revision, payload: payload)
+    }
+}
+
+extension OneAPIClient {
+    func assistantCapability(homeID: UUID, recipientID: UUID?) async throws -> AssistantCapability { throw OneAPIError.invalidResponse }
+    func assistantChat(homeID: UUID, request: AssistantChatRequest) -> AsyncThrowingStream<AssistantStreamEvent, Error> { AsyncThrowingStream { $0.finish(throwing: OneAPIError.invalidResponse) } }
+    func assistantAnswers(homeID: UUID, conversationID: UUID, request: AssistantAnswersRequest) -> AsyncThrowingStream<AssistantStreamEvent, Error> { AsyncThrowingStream { $0.finish(throwing: OneAPIError.invalidResponse) } }
+    func assistantConversation(homeID: UUID, conversationID: UUID) async throws -> AssistantConversation { throw OneAPIError.invalidResponse }
+    func cancelAssistantConversation(homeID: UUID, conversationID: UUID, requestID: UUID, revision: Int) async throws -> AssistantConversation { throw OneAPIError.invalidResponse }
+}
+
+extension HTTPOneAPIClient {
+    func assistantCapability(homeID: UUID, recipientID: UUID?) async throws -> AssistantCapability {
+        var components = URLComponents(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/chat/capability"), resolvingAgainstBaseURL: false)!
+        if let recipientID { components.queryItems = [URLQueryItem(name: "care_recipient_id", value: recipientID.oneAPIPath)] }
+        let data = try await chatData(url: components.url!, method: "GET", body: nil)
+        return try JSONDecoder().decode(AssistantCapability.self, from: data)
+    }
+    func assistantChat(homeID: UUID, request: AssistantChatRequest) -> AsyncThrowingStream<AssistantStreamEvent, Error> {
+        chatStream(path: "homes/\(homeID.oneAPIPath)/chat/stream", body: try? JSONEncoder().encode(request))
+    }
+    func assistantAnswers(homeID: UUID, conversationID: UUID, request: AssistantAnswersRequest) -> AsyncThrowingStream<AssistantStreamEvent, Error> {
+        chatStream(path: "homes/\(homeID.oneAPIPath)/chat/conversations/\(conversationID.oneAPIPath)/answers/stream", body: try? JSONEncoder().encode(request))
+    }
+    func assistantConversation(homeID: UUID, conversationID: UUID) async throws -> AssistantConversation {
+        let data = try await chatData(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/chat/conversations/\(conversationID.oneAPIPath)"), method: "GET", body: nil)
+        return try JSONDecoder().decode(AssistantConversation.self, from: data)
+    }
+    func cancelAssistantConversation(homeID: UUID, conversationID: UUID, requestID: UUID, revision: Int) async throws -> AssistantConversation {
+        let body = try JSONSerialization.data(withJSONObject: ["request_id": requestID.oneAPIPath, "expected_revision": revision])
+        let data = try await chatData(url: baseURL.appendingPathComponent("homes/\(homeID.oneAPIPath)/chat/conversations/\(conversationID.oneAPIPath)/cancel"), method: "POST", body: body)
+        return try JSONDecoder().decode(AssistantConversation.self, from: data)
+    }
+    private func chatRequest(url: URL, method: String, body: Data?) throws -> URLRequest {
+        guard let accessToken, self.homeID != nil else { throw OneAPIError.missingSession }
+        var request = URLRequest(url: url); request.httpMethod = method; request.httpBody = body; request.timeoutInterval = 90
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return request
+    }
+    private func chatData(url: URL, method: String, body: Data?) async throws -> Data {
+        let request = try chatRequest(url: url, method: method, body: body)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw OneAPIError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else { throw OneAPIError.server(status: http.statusCode, message: "The assistant request could not be completed. Please try again.") }
+        return data
+    }
+    private func chatStream(path: String, body: Data?) -> AsyncThrowingStream<AssistantStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard body != nil else { throw OneAPIError.invalidResponse }
+                    var request = try chatRequest(url: baseURL.appendingPathComponent(path), method: "POST", body: body)
+                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    let (bytes, response) = try await session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else { throw OneAPIError.invalidResponse }
+                    guard (200..<300).contains(http.statusCode) else { throw OneAPIError.server(status: http.statusCode, message: "The assistant is unavailable. Please try again.") }
+                    guard http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("text/event-stream") == true else { throw OneAPIError.invalidResponse }
+                    var parser = AssistantSSEParser()
+                    for try await byte in bytes {
+                        try Task.checkCancellation()
+                        for event in try parser.feed(Data([byte])) { continuation.yield(event) }
+                    }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+        }
+    }
 }

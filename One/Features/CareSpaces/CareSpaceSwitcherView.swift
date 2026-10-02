@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CareSpaceContextButton: View {
     let space: CareSpaceSummary?
+    let selectedPersonName: String?
     let isLoading: Bool
     let action: () -> Void
 
@@ -19,15 +20,11 @@ struct CareSpaceContextButton: View {
                     .frame(width: 46, height: 46)
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("CARING FOR")
-                            .font(.caption2.weight(.bold))
-                            .tracking(1.15)
-                            .foregroundStyle(OneTheme.cyan)
-                        Text(space?.name ?? "Current care space")
+                        Text(primaryTitle)
                             .font(.headline)
                             .foregroundStyle(OneTheme.ink)
                             .lineLimit(1)
-                        Text(contextDescription)
+                        Text(secondaryTitle)
                             .font(.caption)
                             .foregroundStyle(OneTheme.secondaryInk)
                             .lineLimit(1)
@@ -60,9 +57,19 @@ struct CareSpaceContextButton: View {
         return "\(space.peopleSummary) · \(space.careSetting.connectedTitle)"
     }
 
+    private var primaryTitle: String {
+        selectedPersonName ?? space?.name ?? "Current care space"
+    }
+
+    private var secondaryTitle: String {
+        guard let space else { return contextDescription }
+        if selectedPersonName != nil { return space.name }
+        return contextDescription
+    }
+
     private var accessibilityLabel: String {
         guard let space else { return "Manage care spaces" }
-        return "Caring for \(space.name), \(space.peopleSummary), \(space.careSetting.connectedTitle)"
+        return "Caring for \(selectedPersonName ?? space.peopleSummary) in \(space.name), \(space.careSetting.connectedTitle)"
     }
 }
 
@@ -77,6 +84,7 @@ struct CareSpaceSwitcherView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
                     introduction
+                    selectedPersonPicker
                     content
                 }
                 .frame(maxWidth: 680, alignment: .leading)
@@ -89,7 +97,6 @@ struct CareSpaceSwitcherView: View {
             .refreshable { await store.refreshCareSpaces() }
             .background(OneTheme.canvas.ignoresSafeArea())
             .safeAreaInset(edge: .bottom, spacing: 0) { footer }
-            .navigationTitle("Care spaces")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(isPresented: $showsCreation) {
                 CreateCareSpaceView(store: store) { dismiss() }
@@ -108,18 +115,11 @@ struct CareSpaceSwitcherView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("YOUR CARE CIRCLE")
-                .font(.caption.weight(.bold))
-                .tracking(1.2)
-                .foregroundStyle(OneTheme.cyan)
-            Text("Choose where you’re caring.")
+            Text("Care spaces")
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .tracking(-0.8)
                 .foregroundStyle(OneTheme.ink)
-            Text("Each care space keeps its people, cameras, maps, routines, and consent choices separate.")
-                .font(.body)
-                .foregroundStyle(OneTheme.secondaryInk)
-                .fixedSize(horizontal: false, vertical: true)
+
         }
     }
 
@@ -147,7 +147,9 @@ struct CareSpaceSwitcherView: View {
                         isDisabled: store.isCareSpaceMutating
                     ) {
                         Task {
-                            if await store.activateCareSpace(space) { dismiss() }
+                            if await store.activateCareSpace(space) {
+                                await store.refreshFamilyData()
+                            }
                         }
                     }
                 }
@@ -159,6 +161,65 @@ struct CareSpaceSwitcherView: View {
         }
     }
 
+    @ViewBuilder
+    private var selectedPersonPicker: some View {
+        if !store.careRecipients.isEmpty {
+            Menu {
+                ForEach(store.careRecipients) { person in
+                    Button {
+                        selectPerson(person)
+                    } label: {
+                        if person.id == store.selectedSubjectID {
+                            Label(person.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(person.displayName)
+                        }
+                    }
+                }
+            } label: {
+                LiquidGlassSurface(radius: 22) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(OneTheme.accentBlue)
+                            .frame(width: 40, height: 40)
+                            .background(OneTheme.accentBlue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("PERSON IN THIS HOME")
+                                .font(.caption2.weight(.bold))
+                                .tracking(1.1)
+                                .foregroundStyle(OneTheme.cyan)
+                            Text(store.selectedSubjectName == "Everyone" ? "Choose a person" : store.selectedSubjectName)
+                                .font(.headline)
+                                .foregroundStyle(OneTheme.ink)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(OneTheme.secondaryInk)
+                    }
+                    .padding(12)
+                    .contentShape(Rectangle())
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .accessibilityLabel("Person in this home")
+            .accessibilityValue(store.selectedSubjectName == "Everyone" ? "Choose a person" : store.selectedSubjectName)
+        }
+    }
+
+    private func selectPerson(_ person: CareRecipient) {
+        store.selectedSubjectID = person.id
+        store.selectedSubjectName = person.displayName
+        Task {
+            await store.refreshMedicationPlans()
+            await store.refreshMedicationReminders()
+        }
+    }
+
     private var emptyState: some View {
         SurfaceCard(radius: 24) {
             VStack(alignment: .leading, spacing: 12) {
@@ -167,7 +228,7 @@ struct CareSpaceSwitcherView: View {
                     .foregroundStyle(OneTheme.accentBlue)
                 Text("No care spaces available")
                     .font(.headline)
-                Text("Your current session remains active. Try loading the list again, or create another care space.")
+                Text("Try again or create a care space.")
                     .font(.subheadline)
                     .foregroundStyle(OneTheme.secondaryInk)
                 Button("Try again") {
@@ -352,15 +413,11 @@ private struct CreateCareSpaceView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("A NEW PLACE TO CARE")
-                .font(.caption.weight(.bold))
-                .tracking(1.2)
-                .foregroundStyle(OneTheme.cyan)
-            Text("Set up the essentials.")
+            Text("Add a care space.")
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .tracking(-0.8)
                 .foregroundStyle(OneTheme.ink)
-            Text("You’ll choose privacy and sharing preferences for this space next.")
+            Text("Choose privacy and sharing next.")
                 .font(.body)
                 .foregroundStyle(OneTheme.secondaryInk)
         }

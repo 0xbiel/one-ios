@@ -71,3 +71,12 @@ struct EncryptedArtifactStore {
         return try AES.GCM.open(box, using: key)
     }
 }
+
+/// Preview and mock authentication must never overwrite a real Keychain session.
+final class InMemorySessionStore: SessionKeyStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    func save(_ value: Data, for key: String) throws { lock.lock(); defer { lock.unlock() }; values[key] = value }
+    func load(_ key: String) throws -> Data? { lock.lock(); defer { lock.unlock() }; return values[key] }
+    func delete(_ key: String) throws { lock.lock(); defer { lock.unlock() }; values.removeValue(forKey: key) }
+}
